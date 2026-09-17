@@ -1,0 +1,70 @@
+# Serving node — Linux containers + NVIDIA (LXC or VM or bare metal).
+
+# Pattern validated in production on an unprivileged LXC with NVIDIA CDI:
+# - bind a specific LAN IP, NOT 0.0.0.0 — the host firewall only exposes
+#   specific ports; 0.0.0.0 would advertise stacks that should be reachable
+#   only from the gateway host
+# - pin GPUs via CDI device names (nvidia.com/gpu=N); do NOT also set
+#   CUDA_VISIBLE_DEVICES — CDI remaps injected GPUs to 0,1 inside the
+#   container, and mixing both mechanisms corrupts the mapping
+# - shm_size + ipc: host for vLLM/NCCL TP setups
+# - model weights mounted read-only; caches read-write on host paths
+
+services:
+  primary-chat:
+    image: vllm/vllm-openai:latest
+    container_name: primary-chat
+    restart: unless-stopped
+    env_file:
+      - ./compose.env            # VLLM_API_KEY_PRIMARY, HF cache overrides
+    environment:
+      - HF_HUB_OFFLINE=1
+      - VLLM_LOGGING_LEVEL=INFO
+      - NVIDIA_VISIBLE_DEVICES=0,1
+      - TZ=Asia/Singapore
+    ports:
+      - "192.168.1.50:8000:8000"   # <- your serving host's LAN IP (example)
+    shm_size: "32g"
+    ipc: host
+    volumes:
+      - /models/primary:/model:ro
+      - ./cache/huggingface:/root/.cache/huggingface
+      - ./cache/vllm:/root/.cache/vllm
+      - ./cache/torch:/root/.cache/torch
+    devices:
+      - nvidia.com/gpu=0
+      - nvidia.com/gpu=1
+    command: >
+      --model /model
+      --served-model-name primary-chat
+      --host 0.0.0.0 --port 8000
+      --tensor-parallel-size 2
+      --max-model-len 131072
+      --gpu-memory-utilization 0.90
+      --disable-log-requests
+
+  aux-35b:
+    image: vllm/vllm-openai:latest
+    container_name: aux-35b
+    restart: unless-stopped
+    env_file:
+      - ./compose.env
+    environment:
+      - HF_HUB_OFFLINE=1
+      - NVIDIA_VISIBLE_DEVICES=2
+    ports:
+      - "192.168.1.50:8001:8000"
+    shm_size: "16g"
+    ipc: host
+    volumes:
+      - /models/aux-35b:/model:ro
+      - ./cache/huggingface:/root/.cache/huggingface
+    devices:
+      - nvidia.com/gpu=2
+    command: >
+      --model /model
+      --served-model-name aux-35b
+      --host 0.0.0.0 --port 8000
+      --max-model-len 262144
+      --gpu-memory-utilization 0.85
+      --disable-log-requests
