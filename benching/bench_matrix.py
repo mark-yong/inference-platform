@@ -2,9 +2,9 @@
 """Generate a concurrency x context-length benchmark matrix for vLLM/SGLang.
 
 A thin config layer over the excellent open-source llm-inference-bench
-harness (credit: Martin Vit — https://github.com/local-inference-lab/
+harness (credit: Martin Vit, https://github.com/local-inference-lab/
 llm-inference-bench). This script only generates and runs the matrix and
-collects per-cell aggregate/single-stream tok/s into one table — the
+collects per-cell aggregate/single-stream tok/s into one table; the
 measuring itself, Prometheus cross-validation, and engine auto-detection
 are the upstream harness's.
 
@@ -18,7 +18,7 @@ Usage:
 
 Environment:
   The API key is read from the env var named by --api-key-env (never a CLI
-  arg — argv leaks via ps).
+  arg; argv leaks via ps).
 """
 import argparse
 import csv

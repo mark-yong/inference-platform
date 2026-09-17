@@ -14,7 +14,7 @@ stalled a live session for about 10 minutes.
 
 Traced the routing chain and found the auxiliary tier had no hard pin: tasks
 without an explicit route could fall through to the default heavy model on the
-shared pair. The failure was not a capacity problem — the auxiliary 35B model
+shared pair. The failure was not a capacity problem: the auxiliary 35B model
 on its own GPU had ample headroom; it was a routing governance gap.
 
 ## Fix
@@ -31,5 +31,5 @@ on its own GPU had ample headroom; it was a routing governance gap.
 ## Why this story belongs in interviews
 
 Multi-model serving fails quietly: everything works until two workloads meet
-on one GPU. The durable fix is routing policy at the gateway layer — the same
+on one GPU. The durable fix is routing policy at the gateway layer; the same
 lesson as workload isolation in any multi-tenant system, applied to inference.

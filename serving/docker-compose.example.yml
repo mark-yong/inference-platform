@@ -1,11 +1,11 @@
-# Serving node — Linux containers + NVIDIA (LXC or VM or bare metal).
+# Serving node: Linux containers + NVIDIA (LXC or VM or bare metal).
 
 # Pattern validated in production on an unprivileged LXC with NVIDIA CDI:
-# - bind a specific LAN IP, NOT 0.0.0.0 — the host firewall only exposes
+# - bind a specific LAN IP, NOT 0.0.0.0: the host firewall only exposes
 #   specific ports; 0.0.0.0 would advertise stacks that should be reachable
 #   only from the gateway host
 # - pin GPUs via CDI device names (nvidia.com/gpu=N); do NOT also set
-#   CUDA_VISIBLE_DEVICES — CDI remaps injected GPUs to 0,1 inside the
+#   CUDA_VISIBLE_DEVICES; CDI remaps injected GPUs to 0,1 inside the
 #   container, and mixing both mechanisms corrupts the mapping
 # - shm_size + ipc: host for vLLM/NCCL TP setups
 # - model weights mounted read-only; caches read-write on host paths

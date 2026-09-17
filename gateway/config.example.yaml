@@ -1,13 +1,13 @@
-# LiteLLM gateway — annotated example config (DB-less mode).
+# LiteLLM gateway: annotated example config (DB-less mode).
 #
 # This is the shape of the production gateway fronting every model on the
-# serving node. Secrets resolve from the environment (os.environ/...) — never
+# serving node. Secrets resolve from the environment (os.environ/...), never
 # in-file. Run DB-less (no database_url): routing, keys and aliases live in
 # this file, which makes the gateway state git-manageable.
 #
 # Key patterns demonstrated:
 #   1. every backend pins a per-task model name (no fall-through to a default
-#      heavy model — see postmortems/2026-08-31-aux-compaction-stall.md)
+#      heavy model; see postmortems/2026-08-31-aux-compaction-stall.md)
 #   2. background/batch aliases get explicit rpm + max_parallel_requests caps
 #   3. a multi-deployment logical group ("background-llm") with weighted
 #      members and an independent-GPU primary, so background traffic survives
@@ -15,7 +15,7 @@
 #   4. model_info.max_input_tokens published per model so clients can discover
 #      context windows from /v1/models (version-gated: needs LiteLLM >= 1.9x)
 #   5. thinking-mode control via chat_template_kwargs per route, with an
-#      adaptive (unpinned) default — see benching/README.md "adaptive reasoning"
+#      adaptive (unpinned) default; see README "adaptive reasoning"
 
 model_list:
   # ---- interactive tier: the primary chat model, TP2 on dedicated GPUs ----
@@ -160,7 +160,7 @@ model_list:
       routing_strategy: latency-based-routing
       allowed_fallbacks: []
 
-# ---- logical aliases (router_settings, NOT top-level — v1.99+ reads it
+# ---- logical aliases (router_settings, NOT top-level; v1.99+ reads it
 #      only under router_settings; top-level is silently unread) ----
 router_settings:
   model_group_alias:
