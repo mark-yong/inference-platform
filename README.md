@@ -219,6 +219,39 @@ unpinned default route:
    versions here. (The examples pin tested tags; production files add
    digests.)
 
+## How the stack is operated (agent-run, human-gated)
+
+The operator of this node is an LLM agent (Hermes) that runs on the
+platform it manages: its own sessions ride the gateway above, served by
+the stacks in `serving/`. The node is therefore both the serving
+infrastructure and the agent's own runtime, which makes the operating
+rules above load-bearing rather than decorative. The split that keeps
+that workable:
+
+- **Watchers are autonomous; actors are not.** Cron watchdogs poll
+  gateway health and verify the running image against the compose pin
+  every 10 minutes. They only report (distinct exit codes, alert on
+  drift or downtime) and deliberately hold no restart or patch
+  capability.
+- **Config is the autonomous surface.** Routing pins, aliases, rate caps
+  and context limits live in the DB-less gateway config; the agent
+  applies routing changes as config edits (several take effect without a
+  restart) and reverts them with git.
+- **Live serving containers are the human gate.** Restarts, recreates
+  and cutovers on production paths are explicit, approved actions. That
+  gate exists because automation here once destroyed its own evidence
+  (the rollback postmortem); the watchers exist so that approvals can be
+  fast, not blind.
+- **Measurement closes the loop.** The harness, matrix preset and
+  Prometheus cross-validation produce the benchmark numbers above; the
+  result files are kept as receipts, and routing and model decisions
+  cite them (the aux-tier pin exists because the c4 matrix said the
+  35B MoE had headroom the TP2 pair did not).
+- **Upstream intel is monitored, not guessed.** Production profiles
+  (the DeepSeek DSpark r19 defaults, the SGLang image versions) are
+  tracked from upstream recipe repos and community config notes, then
+  verified on this node before adoption.
+
 ## Credits
 
 The serving stack stands on open-source work from the local inference
