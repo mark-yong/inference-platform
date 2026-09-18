@@ -232,7 +232,7 @@ for the current GLM quant stack:
 
 ## Credits
 
-Pieces of this stack from the local inference community:
+A warm thanks to the many members of the Local Inference Lab discord, you're all truly wonderful
 
 - **fester** (Martin Vit,
   [voipmonitor](https://github.com/voipmonitor)): the docker containers
@@ -250,7 +250,7 @@ Pieces of this stack from the local inference community:
   [sglang-glm53-flash-sm120](https://github.com/ormandj/sglang-glm53-flash-sm120)
   docker image and W4A16+FP8-mix quant behind the primary TP2 stack.
 - **The [local-inference-lab](https://github.com/local-inference-lab)
-  community**: testing across all of the above.
+  community**: contributions and testing across all of the above.
 - **[NVIDIA Model Optimizer](https://github.com/NVIDIA/Model-Optimizer)**:
   the NVFP4 quant of Qwen3.6-35B-A3B
   ([nvidia/Qwen3.6-35B-A3B-NVFP4](https://huggingface.co/nvidia/Qwen3.6-35B-A3B-NVFP4))
