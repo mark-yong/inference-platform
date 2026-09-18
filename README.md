@@ -97,10 +97,9 @@ Reference results from the production node (3× RTX PRO 6000, one Max-Q
 
 | Model · engine | c1 | c2 | c4 | 131k ctx (c1) |
 |---|---|---|---|---|
-| 35B-A3B NVFP4 · 1 GPU (vLLM) | 264 | 409 | 770 | 198 |
-| Primary chat · TP2 (SGLang) | 140–153 | 212–230 | 333–391 | 132 |
-| Primary chat · TP2 (vLLM) | 174–187 | 269–281 | 390 | 186 |
-| Primary chat EXL3-4bpw · TP2 (vLLM) | 114–118 | n/m | n/m | 114 (flat 0→131k) |
+| GLM-5.3-Flash · TP2 (SGLang) | 140–153 | 212–230 | 333–391 | 132 |
+| DeepSeek-V4-Flash · TP2 (vLLM) | 174–187 | 269–281 | 390 | 186 |
+| Qwen3.6-35B-A3B NVFP4 · 1 GPU (vLLM) | 264 | 409 | 770 | 198 |
 
 Readings that drove decisions:
 
@@ -109,8 +108,6 @@ Readings that drove decisions:
   while interactive traffic keeps the TP2 pair.
 - Long-context decode stays essentially flat on TP2 (140→132 tok/s across
   0→131k); capacity planning does not blow up at long context.
-- 4-bit EXL3 keeps decode flat across the entire 131k range (114→114); the
-  quantisation trade was measured, not assumed.
 - Single-stream inter-token latency is tight at every context (p50 6.8 ms,
   p99 7.2 ms); streaming quality holds even while background jobs run on
   the third GPU.
