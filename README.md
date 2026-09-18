@@ -261,8 +261,8 @@ for the current GLM quant stack:
 
 A warm thanks to the many members of the Local Inference Lab discord, you're all truly wonderful
 
-- **fester** (Martin Vit,
-  [voipmonitor](https://github.com/voipmonitor)): the docker containers
+- **[voipmonitor](https://github.com/voipmonitor)** (Martin Vit): the
+  docker containers
   ([blackwell-llm-docker](https://github.com/local-inference-lab/blackwell-llm-docker))
   and recipes ([rtx6kpro](https://github.com/local-inference-lab/rtx6kpro))
   that most local-inference-lab projects run on, plus the
