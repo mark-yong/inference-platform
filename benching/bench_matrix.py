@@ -10,7 +10,7 @@ cap) and invokes upstream's llm_decode_bench.py once per
 into one table.
 
 Interface matched to upstream at the version the README pins
-(v0.4.29, commit d115fee): entry point llm_decode_bench.py, matrix flags
+(v0.4.32, commit d115fee): entry point llm_decode_bench.py, matrix flags
 --concurrency/--contexts, output flag --output, summary in
 summary_table[context][concurrency] (tok/s).
 

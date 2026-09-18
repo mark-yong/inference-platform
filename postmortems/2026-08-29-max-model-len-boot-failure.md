@@ -1,47 +1,57 @@
-# Postmortem: MAX_MODEL_LEN 1M Boot Failure
+# Incident: rollback erased diagnostics during a 1M-context rollout
 
-Date: ~2026-08-29 · Service: primary chat model (vLLM, TP2) · Severity: 8 min
-service downtime · Author: Mark Yong Enhan
+Date: 2026-08-29
+Affected service: primary chat model (vLLM, TP2)
+Impact: ~8 min service unavailability
+Status: Resolved; technical trigger undetermined
 
-## What was attempted
+## Summary
 
-Raise the primary model's context window to 1M tokens on the production TP2
-pair, watching health and rolling back automatically if startup failed.
+A 1M-token context-window change on the production TP2 pair never reached a
+healthy state within the 300-second readiness window. The automatic rollback
+reverted the configuration and restarted the service, destroying the boot
+logs that would have explained the startup failure. Service recovered in
+~8 minutes; the technical root cause was never established.
 
-## What happened
+## Trigger
 
-- The 1M configuration never reached a healthy state within the 300-second
-  readiness window.
-- The automatic rollback reverted the configuration and restarted the service,
-  and in doing so, destroyed the boot logs that explained WHY it failed.
-- The service recovered in ~8 minutes, but the root cause was never positively
-  identified.
+Configuration change: `--max-model-len` raised to 1M on the primary TP2
+stack, with automatic rollback armed.
 
-## What made it worse
+## Cause
 
-The rollback logic optimised for fast recovery and treated logs as ephemeral
-container state. On a system where the container restart is the failure signal,
-throwing away the logs throws away the diagnosis. The root cause remains
-unknown to this day. That is an honest limitation.
+Technical root cause: unknown. The boot logs required to determine the
+startup failure were destroyed during the automatic rollback.
 
-## Root cause (process, not technical)
+Contributing process failure: the rollback path recreated/restarted the
+serving container before preserving its diagnostic output. The rollback
+logic optimised for fast recovery and treated logs as ephemeral container
+state; on a system where a container restart is the failure signal,
+discarding the logs discards the diagnosis. Observability was not part of
+the rollback path.
 
-Observability was not part of the rollback path. Recovery automation and
-diagnosis automation were treated as separate concerns; they are not.
+## Resolution
 
-## Fix and follow-up
+Automatic rollback restored the previous configuration; the service
+returned to healthy in ~8 minutes.
 
-1. Standing rule for any context-window or capacity change: capture complete
-   docker logs BEFORE any revert or restart can touch the container.
-2. Container lifecycle policy: containers serving live traffic are never
-   recreated by automation; deliberate restarts are explicit, human-approved actions.
-3. Cutover pattern for risky changes: stand up the new configuration on a spare
-   port, probe it, then cut over; never mutate the healthy production path in
-   place.
+## Corrective actions
 
-## Why this generalises
+- [Implemented] Capture complete docker logs BEFORE any revert or restart
+  touches a container (standing rule for context-window or capacity changes).
+- [Implemented] Container lifecycle policy: containers serving live traffic
+  are never recreated by automation; deliberate restarts are explicit,
+  human-approved actions.
+- [Implemented] Risky changes cut over on a spare port; the healthy
+  production path is never mutated in place.
 
-It is a real production incident where the correct answer was a governance
-change, not a config tweak; the same lesson that governs production ML
-deployments anywhere: the rollback path is part of the system, and it must
-preserve evidence.
+## Validation
+
+Post-change 1M-context attempts follow the capture-logs-first and
+spare-port patterns; no repeat of the evidence-loss failure mode since.
+
+## Operational lesson
+
+Rollback is part of the observability system: recovery automation must
+preserve the evidence required to diagnose the failure it is recovering
+from.

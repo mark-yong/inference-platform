@@ -12,10 +12,11 @@
 #   3. a multi-deployment logical group ("background-llm"): the aux GPU is the
 #      heavy-weight normal destination; the interactive TP2 deployment sits in
 #      the same group as a heavily capped low-weight overflow member (rate
-#      limits + max_parallel_requests: 1), used only when the aux GPU is
-#      saturated or restarting. It is NOT a 1-in-11 "standby": weight is a
+#      limits + max_parallel_requests: 1). Weight is a
 #      selection probability, which is why the caps, not the weight, are what
-#      protect interactive traffic. For strict isolation, remove the TP2
+#      protect interactive traffic. The TP2 member therefore provides heavily
+#      capped overflow capacity, including during aux-GPU saturation or
+#      maintenance. For strict isolation, remove the TP2
 #      member entirely and route overflow explicitly instead.
 #   4. model_info.max_input_tokens published per model so clients can discover
 #      context windows from /v1/models (version-gated: needs LiteLLM >= 1.9x)

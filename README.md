@@ -134,7 +134,9 @@ Benchmark conditions (from the saved result files on the production node):
 - Engines: SGLang (ormandj `sglang-glm53-flash-sm120` v0.4.3),
   vLLM (Blackwell build with b12x kernels; aux tier on
   `vllm/vllm-openai:nightly`). Run dates: DeepSeek 2026-08-28, aux 35B
-  2026-09-01, GLM 2026-09-02/03 (decode v0.4.29-file / prefill rerun).
+  2026-09-01, GLM 2026-09-02/03 (the GLM result file's own metadata
+  records an older harness build than the pinned commit; prefill figures
+  are from the 09-03 rerun).
 - Speculative decoding: GLM rows ran with adaptive MTP (EAGLE, adaptive
   draft profile [3,5]) on SGLang; the aux 35B ran without MTP (draft MoE
   unsupported on its vLLM build); the DeepSeek DSpark r19 config's spec

@@ -23,7 +23,7 @@
 
 services:
   glm53-flash-sm120:
-    image: ghcr.io/ormandj/sglang-glm53-flash-sm120:v0.4.3
+    image: ghcr.io/ormandj/sglang-glm53-flash-sm120:v${IMAGE_TAG}
     container_name: glm53-flash-sm120
     pull_policy: missing
     init: true
@@ -93,7 +93,7 @@ services:
       - "4"
       - --enable-hierarchical-cache
       - --hicache-size
-      - "32"
+      - "${HICACHE_SIZE_GB}"
       # adaptive MTP speculative decoding (draft profile [3,5]):
       - --speculative-algorithm
       - EAGLE
@@ -131,10 +131,10 @@ services:
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
       TZ: Asia/Singapore
     ports:
-      - "192.168.1.50:8013:8000"   # <- your serving host's LAN IP (example)
+      - "192.168.1.50:${PORT}:8000"   # <- your serving host's LAN IP (example)
     volumes:
-      - /models/glm53:/models/glm53:ro
-      - ./cache:/root/.cache
+      - ${MODEL_DIR}:/models/glm53:ro
+      - ${CACHE_DIR}:/root/.cache
       - ./adaptive.example.json:/etc/glm53-adaptive/adaptive.json:ro
     devices:
       - nvidia.com/gpu=0
