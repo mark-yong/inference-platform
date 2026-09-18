@@ -168,17 +168,12 @@ this node serves production on TP2:
   165–180 tok/s c1 flat to 128k on LLM-bench. DCP1 reaches ~2M context,
   DCP3 ~5–7.5M at slower decode (~150 tok/s c1, ~440 tok/s c8).
 - Checkpoints in use: local-inference-lab/GLM-5.3-Flash-NVFP4 (uniform
-  NVFP4, simplest) and brandonmusic/GLM-5.3-Flash-TrellisMX-MXFP8 (better
-  LAVD consistency in community tests). Mixed-quant checkpoints (MXFP8 +
+  NVFP4, simplest) and brandonmusic/GLM-5.3-Flash-TrellisMX-MXFP8. Mixed-quant checkpoints (MXFP8 +
   W4A16 in one file) add enough TP3-specific complexity that testers
   rejected them; EXL3 fails on TP3 outright (padded
   `moe_intermediate_size` loader mismatch).
-- One tester ran TP3 with 8 GiB of decoder experts offloaded to RAM:
-  prefill 7,424 tok/s (32k) to 5,578 (512k), decode 75–85 tok/s,
-  2.61M-token KV pool.
-- Quality is the open gap: LAVD consistency on TP3 attempts has not
-  reached TP2 parity; the best NVFP4 result so far is 28/30, and testing
-  continues against the TrellisMX checkpoint.
+- Long-context consistency on TP3 attempts has not
+  reached TP2 parity.
 
 ## Incidents
 
