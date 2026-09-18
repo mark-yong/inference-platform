@@ -151,19 +151,21 @@ generalise to any production ML deployment:
 The serving stack stands on open-source work from the local inference
 community; the pieces this node actually runs:
 
-- **[fester](https://github.com/local-inference-lab)** (Martin Vit): the
-  docker containers ([blackwell-llm-docker](https://github.com/local-inference-lab/blackwell-llm-docker))
+- **fester** (Martin Vit,
+  [voipmonitor](https://github.com/voipmonitor)): the docker containers
+  ([blackwell-llm-docker](https://github.com/local-inference-lab/blackwell-llm-docker))
   and recipes ([rtx6kpro](https://github.com/local-inference-lab/rtx6kpro))
   that most local-inference-lab projects run on, plus the
   [llm-inference-bench](https://github.com/local-inference-lab/llm-inference-bench)
   harness behind `benching/bench_matrix.py`.
-- **[lukealonso](https://github.com/lukealonso)**: many of the quants,
-  kernels and optimisations that make RTX PRO 6000 / Blackwell cards
-  runnable with vLLM, including the
-  [b12x](https://github.com/local-inference-lab/b12x) backend this node's
-  stacks launch with (`BACKEND=b12x`).
-- **[ormandj](https://github.com/ormandj)**: the `sglang-glm53-flash-sm120`
-  docker image and quant behind the primary TP2 stack.
+- **[lukealonso](https://github.com/lukealonso)** (Luke Alonso): the
+  [b12x](https://github.com/local-inference-lab/b12x) kernel backend that
+  makes RTX PRO 6000 / Blackwell cards runnable with vLLM (this node's
+  stacks launch with `BACKEND=b12x`), and the quants in
+  [quant-toolkit](https://github.com/local-inference-lab/quant-toolkit).
+- **[ormandj](https://github.com/ormandj)** (David Orman): the
+  [sglang-glm53-flash-sm120](https://github.com/ormandj/sglang-glm53-flash-sm120)
+  docker image and W4A16+FP8-mix quant behind the primary TP2 stack.
 - **The [local-inference-lab](https://github.com/local-inference-lab)
   community**: testing across all of the above.
 - **[NVIDIA Model Optimizer](https://github.com/NVIDIA/Model-Optimizer)**:
