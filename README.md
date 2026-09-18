@@ -6,7 +6,8 @@ Not a tutorial repo: this is how I run a single-node self-hosted AI
 platform 24/7: 3× RTX PRO 6000 (96 GB each) on an EPYC server under
 Proxmox, ~15 containers, four open-weight model families in production
 across vLLM / SGLang / llama.cpp, every call served locally (no
-third-party LLM API in the serving path). The configs here are sanitised,
+third-party LLM API in the serving path); the representative vLLM/SGLang
+serving configs are included here. The configs here are sanitised,
 annotated forms of the live production files: hosts parameterised, secrets
 moved to env, model names genericised; the structure and the incident
 notes in the comments are intact.
@@ -45,8 +46,8 @@ Three tiers, enforced in the gateway config itself:
 
 The 2026-08-31 postmortem shows the failure mode this tier structure
 exists for: everything works until two workloads land on one GPU. After the
-pin, a full background tick completes in ~35 s with zero interactive
-contention.
+pin, a full background tick completes in ~35 s with no interactive
+contention on the validation runs.
 
 Other patterns worth lifting from the annotated config:
 
@@ -62,7 +63,8 @@ Other patterns worth lifting from the annotated config:
 - **Adaptive reasoning by default, pins only for special routes**: pinning
   `reasoning_effort: high` measured 966 response tokens even on trivial
   prompts; adaptive spends 51 on trivial and ~1,900 with a natural stop on
-  complex ones. Adaptive thinking is a free cost-classifier.
+  complex ones. In effect the adaptive setting classifies reasoning budget
+  per request.
 - **`additional_drop_params: ["min_p", "logit_bias"]`** on vLLM MTP routes:
   speculative decoding rejects these, and common clients still send them.
 
@@ -71,16 +73,22 @@ Other patterns worth lifting from the annotated config:
 - **GPU pinning via CDI** (`nvidia.com/gpu=N`), never `--gpus all` plus
   `CUDA_VISIBLE_DEVICES` together: CDI remaps injected GPUs to 0,1 inside
   the container; mixing mechanisms corrupts the mapping.
-- **Bind the LAN IP, not 0.0.0.0**: the host firewall exposes specific
-  ports only; a wildcard bind advertises stacks that should be gateway-only.
+- **Bind the LAN IP, not 0.0.0.0**: `0.0.0.0` makes a port listen on every
+  interface, so backend ports intended for the gateway only end up
+  reachable from anywhere the host is. The host firewall narrows what is
+  reachable; binding only the intended interface removes the exposure
+  instead of filtering it.
 - **Read-only model mounts; read-write caches**: weights are immutable,
   HF/vLLM/torch caches are per-stack host paths.
 - **`ipc: host` + sized `shm_size`** for NCCL/tensor-parallel setups.
-- **SGLang specifics** (from the production TP2 stack): cuda-graph decode
-  batch list must enumerate *every* batch size up to
-  `--max-running-requests` (extend the list when you raise it); mamba-cache
-  slots for hybrid models are ~5 per concurrent request (state + MTP
-  intermediates); host-RAM HiCache tier sized explicitly.
+- **SGLang specifics** (from the production GLM-5.3/MTP TP2 stack, image
+  v0.4.3): the explicit `--cuda-graph-bs-decode` list has to enumerate
+  every batch size up to `--max-running-requests`; extend it when you
+  raise the cap. Mainline SGLang also exposes `--cuda-graph-bs` plus
+  graph padding, so check your version's capture/padding behaviour before
+  assuming a sparse capture list is safe. Mamba-cache slots for hybrid
+  models run ~5 per concurrent request (state + MTP intermediates);
+  host-RAM HiCache tier sized explicitly.
 
 ## Benchmarks
 
@@ -92,25 +100,39 @@ Prometheus cross-validation are upstream's; this layer adds matrix
 generation, one-table collection, and env-based key handling (keys are read
 from an env var *name*, never argv (argv leaks via `ps`)).
 
+Benchmark conditions (from the saved result files on the production node):
+
+- Harness: llm-inference-bench @ `d115fee` (2026-09-01)
+- Output: 2,048 max tokens per request, 5 requests per concurrency slot
+- Sampling: engine defaults (temperature/top_p not pinned)
+- Prompts: scout request populates the prefix cache, measured requests
+  reuse the same prompt; figures measure sustained decode
+- Results: aggregate decode tok/s across in-flight requests; the c1 column
+  is single-stream. Inter-token latencies quoted are single-stream p50/p99.
+- Engines: SGLang (ormandj `sglang-glm53-flash-sm120` v0.4.3),
+  vLLM (Blackwell build with b12x kernels; aux tier on
+  `vllm/vllm-openai:nightly`)
+- GPUs: TP2 pair = 325 W Max-Q cards; aux = one 600 W card
+
 Reference results from the production node (3× RTX PRO 6000, one Max-Q
 325 W pair for TP2 + one full 600 W card):
 
 | Model · engine | c1 | c2 | c4 | 131k ctx (c1) |
 |---|---|---|---|---|
-| GLM-5.3-Flash · TP2 (SGLang) | 140–153 | 212–230 | 333–391 | 132 |
-| DeepSeek-V4-Flash · TP2 (vLLM) | 174–187 | 269–281 | 390 | 186 |
-| Qwen3.6-35B-A3B NVFP4 · 1 GPU (vLLM) | 264 | 409 | 770 | 198 |
+| GLM-5.3-Flash · TP2 SGLang | 140–153 | 212–230 | 333–391 | 132 |
+| DeepSeek-V4-Flash · TP2 vLLM | 174–187 | 269–281 | 390 | 186 |
+| Qwen3.6-35B-A3B NVFP4 · 1 GPU vLLM | 264 | 409 | 770 | 198 |
 
 Readings that drove decisions:
 
-- The small A3B MoE on **one** GPU is the throughput king (770 tok/s
-  aggregate at c4). That is why 100% of background agent traffic rides it
-  while interactive traffic keeps the TP2 pair.
-- Long-context decode stays essentially flat on TP2 (140→132 tok/s across
-  0→131k); capacity planning does not blow up at long context.
+- The A3B auxiliary model has the highest c4 aggregate throughput in this
+  matrix: 770 tok/s on one GPU. That is why background agents are routed
+  there instead of consuming TP2 capacity.
+- GLM c1 decode fell only ~6% from short context to 131k (140→132 tok/s)
+  on this stack; capacity planning does not blow up at long context.
 - Single-stream inter-token latency is tight at every context (p50 6.8 ms,
-  p99 7.2 ms); streaming quality holds even while background jobs run on
-  the third GPU.
+  p99 7.2 ms); streaming quality held while background jobs ran on the
+  third GPU during the validation runs.
 - Prefill cross-checked server-side: 6.2k tok/s client-measured vs 6.5k on
   the engine's own Prometheus counters (83.5k-token prompt, <5% gap).
 
