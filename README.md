@@ -223,10 +223,14 @@ unpinned default route:
 
 The operator of this node is an LLM agent (Hermes) that runs on the
 platform it manages: its own sessions ride the gateway above, served by
-the stacks in `serving/`. The node is therefore both the serving
-infrastructure and the agent's own runtime, which makes the operating
-rules above load-bearing rather than decorative. The split that keeps
-that workable:
+the stacks in `serving/`. Not every deployment runs from there, though:
+some stacks are stood up and maintained from Cursor sessions on the
+workstation, driven by external frontier models. The operating rules
+below are deliberately executor-agnostic, the same gates apply whether
+the agent making the change is the locally served one or a cloud model
+in an IDE session. The node is both the serving infrastructure and one
+of its own agents' runtime, which makes the rules load-bearing rather
+than decorative. The split that keeps that workable:
 
 - **Watchers are autonomous; actors are not.** Cron watchdogs poll
   gateway health and verify the running image against the compose pin
@@ -255,8 +259,9 @@ that workable:
 ### Deploying a model
 
 Model deployments run the same gate pattern, agent-executed end to end
-with human approval at the serving step. The loop, as actually run for
-the current GLM quant stack:
+with human approval at the serving step, from either surface: the local
+Hermes agent or a Cursor session on the workstation running external
+models. The loop, as actually run for the current GLM quant stack:
 
 1. **Track the recipe, pin everything.** Upstream recipe repo and producer
    image tag are pinned; the base checkpoint revision is pinned; the
