@@ -103,16 +103,26 @@ from an env var *name*, never argv (argv leaks via `ps`)).
 
 Benchmark conditions (from the saved result files on the production node):
 
-- Harness: llm-inference-bench @ `d115fee` (2026-09-01)
+- Harness: llm-inference-bench v0.4.29 @ `d115fee` (2026-09-01)
 - Output: 2,048 max tokens per request, 5 requests per concurrency slot
 - Sampling: engine defaults (temperature/top_p not pinned)
 - Prompts: scout request populates the prefix cache, measured requests
   reuse the same prompt; figures measure sustained decode
-- Results: aggregate decode tok/s across in-flight requests; the c1 column
-  is single-stream. Inter-token latencies quoted are single-stream p50/p99.
+- Results: decode table = aggregate decode tok/s across in-flight requests
+  (the c1 column is single-stream; inter-token latencies quoted are
+  single-stream p50/p99). Prefill table = prompt tok/s from client-measured
+  time-to-first-token on the scout request, single sample per cell;
+  131k cells cross-checked against the engines' Prometheus counters.
 - Engines: SGLang (ormandj `sglang-glm53-flash-sm120` v0.4.3),
   vLLM (Blackwell build with b12x kernels; aux tier on
   `vllm/vllm-openai:nightly`)
+- Speculative decoding: GLM rows ran with adaptive MTP (EAGLE, adaptive
+  draft profile [3,5]) on SGLang; the aux 35B ran without MTP (draft MoE
+  unsupported on its vLLM build); the DeepSeek DSpark r19 config's spec
+  state at bench time is not recorded in the result file
+- Interconnect: PCIe 4.0 x16 on every GPU link, NODE topology, no
+  NVLink/P2P (the P2P registry overrides were verified but the fabric is
+  plain PCIe; TP2 traffic crosses the root complex)
 - GPUs: TP2 pair = 325 W Max-Q cards; aux = one 600 W card
 
 Reference results from the production node (3× RTX PRO 6000, one Max-Q
@@ -124,6 +134,14 @@ Reference results from the production node (3× RTX PRO 6000, one Max-Q
 | DeepSeek-V4-Flash · TP2 vLLM | 174–187 | 269–281 | 390 | 186 |
 | Qwen3.6-35B-A3B NVFP4 · 1 GPU vLLM | 264 | 409 | 770 | 198 |
 
+Prefill throughput (prompt tok/s, same runs, client-measured TTFT):
+
+| Model · engine | 8k | 16k | 32k | 64k | 131k |
+|---|---:|---:|---:|---:|---:|
+| GLM-5.3-Flash · TP2 SGLang | 4,941 | 6,013 | 3,678 | 4,255 | 6,229 |
+| DeepSeek-V4-Flash · TP2 vLLM | 5,734 | 5,582 | 6,363 | 6,793 | 6,583 |
+| Qwen3.6-35B-A3B NVFP4 · 1 GPU vLLM | 22,553 | 20,767 | 17,514 | 13,859 | 9,432 |
+
 Readings that drove decisions:
 
 - The A3B auxiliary model has the highest c4 aggregate throughput in this
@@ -134,6 +152,10 @@ Readings that drove decisions:
 - Single-stream inter-token latency is tight at every context (p50 6.8 ms,
   p99 7.2 ms); streaming quality held while background jobs ran on the
   third GPU during the validation runs.
+- Prefill differs sharply by tier: the 1-GPU 35B NVFP4 prefills at
+  22.5k tok/s short-context (3-4x either TP2 pair) and still clears
+  9.4k at 131k; both TP2 pairs hold a roughly flat ~3.7-6.8k across the
+  whole range.
 - Prefill cross-checked server-side: 6.2k tok/s client-measured vs 6.5k on
   the engine's own Prometheus counters (83.5k-token prompt, <5% gap).
 
