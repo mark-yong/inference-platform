@@ -251,7 +251,7 @@ for the current GLM quant stack:
 
 ## Credits
 
-A warm thanks to the many members of the Local Inference Lab discord, you're all truly wonderful
+A warm thanks to the many members of the Local Inference Lab Discord, you're all truly wonderful
 
 - **[voipmonitor](https://github.com/voipmonitor)** (Martin Vit): the
   docker containers
