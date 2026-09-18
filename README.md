@@ -27,8 +27,8 @@ benching/
 postmortems/
   2026-08-29-*.md             rollback destroyed the evidence: observability
                               must be part of the rollback path
-  2026-08-31-*.md             aux job stalled interactive traffic: routing
-                              policy, not hardware, is the fix
+  2026-08-31-*.md             aux job fell through a default route onto the
+                              primary pair: gateway pins, not capacity
 ```
 
 ## The routing governance story (why the gateway config looks like this)
@@ -44,10 +44,11 @@ Three tiers, enforced in the gateway config itself:
    survives TP2-pair maintenance while staying rate-limited (rpm caps +
    `max_parallel_requests: 1`).
 
-The 2026-08-31 postmortem shows the failure mode this tier structure
-exists for: everything works until two workloads land on one GPU. After the
-pin, a full background tick completes in ~35 s with no interactive
-contention on the validation runs.
+The 2026-08-31 postmortem is why the tiers exist: the gateway's default
+route let an unpinned background job onto the TP2 pair, and a live session
+stalled while the dedicated auxiliary GPU sat idle. After the pin, a full
+background tick completes in ~35 s with no interactive contention on the
+validation runs.
 
 Other patterns worth lifting from the annotated config:
 
@@ -148,10 +149,13 @@ generalise to any production ML deployment:
   revert; containers serving live traffic are never recreated by automation;
   risky changes cut over on a spare port, never in place.
 - **[Aux task stalled interactive traffic](postmortems/2026-08-31-aux-compaction-stall.md)**:
-  a large background job with no routing pin landed on the primary TP2
-  pair and stalled a live session ~10 min. The fix was routing policy at the
-  gateway, not hardware: interactive and background workloads must never
-  share a serving pair.
+  the auxiliary tier had no hard pin, so a background compaction job fell
+  through the gateway's default route onto the primary TP2 pair (thinking
+  mode on) and stalled a live session ~10 min, while the auxiliary model's
+  dedicated GPU sat with ample headroom. The bug was the fall-through path,
+  not capacity; the fix removes it: six task types pinned by name, no
+  default route to the primary pair. A full aux tick went from stalling
+  sessions to ~35 s.
 
 ## Operating rules (all from incidents on this node)
 
