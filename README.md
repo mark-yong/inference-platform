@@ -1,153 +1,134 @@
 # inference-platform
 
-**Operating model for a private multi-GPU LLM serving node: serving configs, gateway routing governance, benchmark harness, and the postmortems that shaped it.**
+This repo contains the sanitised configs from my inference server. It runs
+3× RTX PRO 6000 (96 GB each) on an EPYC host under Proxmox, with LiteLLM in
+front of vLLM, SGLang and llama.cpp, ~15 containers, four open-weight model
+families, and every call served locally, with no third-party LLM API in the
+serving path.
 
-Not a tutorial repo: this is how I run a single-node self-hosted AI
-platform 24/7: 3× RTX PRO 6000 (96 GB each) on an EPYC server under
-Proxmox, ~15 containers, four open-weight model families in production
-across vLLM / SGLang / llama.cpp, every call served locally (no
-third-party LLM API in the serving path); the representative vLLM/SGLang
-serving configs are included here. The configs here are sanitised,
-annotated forms of the live production files: hosts parameterised, secrets
-moved to env, model names genericised; the structure and the incident
-notes in the comments are intact.
+The examples include the routing config, representative serving stacks, the
+benchmark wrapper I use for capacity tests, and two incident notes that led
+to changes in the current setup. Hosts are parameterised, secrets live in
+env files, and model names are genericised in the example configs.
 
-## What's in the box
+## Contents
 
 ```
-gateway/config.example.yaml   LiteLLM routing governance: tiers, pins, weighted
-                              background group (aux GPU normal, TP2 capped
-                              overflow), per-task aliases (DB-less mode)
+gateway/config.example.yaml   LiteLLM routing: tiers, per-task pins, weighted
+                              background group (DB-less mode)
 serving/
-  docker-compose.example.yml  vLLM stacks: TP2 primary + single-GPU aux,
-                              CDI GPU pinning, LAN-IP binds, pinned engine
-                              image, backend auth via VLLM_API_KEY
+  docker-compose.example.yml  vLLM stacks: TP2 primary + single-GPU aux
   docker-compose.sglang-glm53.example.yml
-                              SGLang TP2 stack (GLM-5.3/MTP class): adaptive
-                              MTP, cuda-graph bs list, mamba cache sizing,
-                              HiCache, PCIe allreduce env
-  compose.env.example         env templates, one file per service (keys
-                              never in-file; vLLM reads VLLM_API_KEY)
-  sglang.env.example          env for the SGLang stack (image tag, port,
-                              model/cache paths, HiCache size)
-  adaptive.example.json       adaptive-MTP draft profile for the SGLang
-                              stack (per-concurrency candidate steps)
+                              SGLang TP2 stack (GLM-5.3/MTP class)
+  compose.env.example         env templates, one per service
+  compose.env.aux.example     env for the aux-35b service
+  sglang.env.example          env for the SGLang stack
+  adaptive.example.json       adaptive-MTP draft profile
 benching/
-  bench_matrix.py             concurrency × context-length matrix runner
-                              (thin layer over llm-inference-bench)
+  bench_matrix.py             concurrency × context matrix runner over
+                              llm-inference-bench
 postmortems/
-  2026-08-29-*.md             rollback destroyed the evidence: observability
-                              must be part of the rollback path
-  2026-08-31-*.md             aux job fell through a default route onto the
-                              primary pair: gateway pins, not capacity
+  2026-08-29-*.md             rollback removed boot logs before diagnosis
+  2026-08-31-*.md             unpinned background route stalled a session
 ```
 
-## The routing governance story (why the gateway config looks like this)
+## Routing
 
-Three tiers, enforced in the gateway config itself:
+Three tiers in the gateway config:
 
-1. **Interactive**: the primary chat model on a dedicated TP2 GPU pair.
-2. **Auxiliary**: a small MoE on its own GPU; every background task type
-   (summarisation, titling, extraction, triage...) gets a **named pin** to
-   this tier. There is no fall-through route to the primary pair.
-3. **Background**: a weighted multi-deployment group (`weight: 10` on the
-   independent GPU) plus a heavily capped TP2 overflow member (`weight: 1`,
-   `rpm: 4`, `max_parallel_requests: 1`) so background traffic survives
-   aux-GPU maintenance while interactive capacity stays bounded. Weight is
-   a selection probability, not a standby flag: the caps, not the weight,
-   are what bound what background can take from the TP2 pair when the
-   overflow member is picked. If you want the isolation rule below with
-   zero exceptions, drop the TP2 member and route overflow explicitly.
+1. Interactive: the primary chat model on a dedicated TP2 GPU pair.
+2. Auxiliary: Qwen3.6-35B-A3B on its own GPU. Every background task type
+   (summarisation, titling, extraction, triage) has a named pin to this
+   tier; no route falls through to the primary pair.
+3. Background: a weighted group, weight 10 on the auxiliary GPU plus a
+   capped TP2 member (weight 1, `rpm: 4`, `max_parallel_requests: 1`).
+   Weight sets selection probability; the caps are what bound the impact on
+   interactive traffic. Remove the TP2 member for strict isolation.
 
-The 2026-08-31 postmortem is why the tiers exist: the gateway's default
-route let an unpinned background job onto the TP2 pair, and a live session
-stalled while the dedicated auxiliary GPU sat idle. After the pin, a full
-background tick completes in ~35 s with no interactive contention on the
-validation runs.
+On 2026-08-31 an unpinned background compaction job followed the default
+route onto the TP2 pair and stalled a live session for about 10 minutes
+while the auxiliary GPU sat idle. After the task-type pins were added, a
+full background tick completed in ~35 s with no observed contention. See
+Incidents.
 
-Other patterns worth lifting from the annotated config:
+Other configuration details:
 
-- **DB-less mode**: no `database_url`; routing, aliases and keys live in the
-  YAML, making gateway state git-manageable. (Trade-off: the admin UI is
-  unavailable; everything is file-managed.)
-- **`model_group_alias` belongs under `router_settings`**: as a top-level
-  key it is silently unread on current versions: the proxy comes up healthy,
-  then the alias 404s at call time.
-- **Context-window discovery**: publish `model_info.max_input_tokens` per
-  model; clients read it from `/v1/models` (version-gated behaviour; check
-  the gateway version before debugging "missing context length").
-- **Adaptive reasoning by default, pins only for special routes**: pinning
-  `reasoning_effort: high` measured 966 response tokens even on trivial
-  prompts; adaptive spends 51 on trivial and ~1,900 with a natural stop on
-  complex ones. In effect the adaptive setting classifies reasoning budget
-  per request.
-- **`additional_drop_params: ["min_p", "logit_bias"]`** on vLLM MTP routes:
-  speculative decoding rejects these, and common clients still send them.
+- DB-less mode: no `database_url`; routing, aliases and keys live in this
+  YAML, so gateway state is in git. The admin UI is unavailable in this
+  mode; everything is file-managed.
+- `model_group_alias` belongs under `router_settings`. Top-level, it is
+  silently unread on current versions: the proxy comes up healthy, then the
+  alias 404s at call time.
+- `model_info.max_input_tokens` is published per model; clients read it
+  from `/v1/models`. Version-gated; check the gateway version before
+  debugging missing context length.
+- `reasoning_effort` is not pinned. Pinning `high` measured 966 response
+  tokens on trivial prompts; adaptive spent 51 on the same prompts and
+  ~1,900 with a natural stop on complex ones.
+- `additional_drop_params: ["min_p", "logit_bias"]` on vLLM MTP routes;
+  speculative decoding rejects these and common clients still send them.
 
-## Serving config patterns (why the compose file looks like this)
+## Serving configuration
 
-- **GPU pinning via CDI** (`nvidia.com/gpu=N`), never `--gpus all` plus
-  `CUDA_VISIBLE_DEVICES` together: CDI remaps injected GPUs to 0,1 inside
-  the container; mixing mechanisms corrupts the mapping.
-- **Bind the LAN IP, not 0.0.0.0**: `0.0.0.0` makes a port listen on every
-  interface, so backend ports intended for the gateway only end up
-  reachable from anywhere the host is. The host firewall narrows what is
-  reachable; binding only the intended interface removes the exposure
-  instead of filtering it.
-- **Read-only model mounts; read-write caches**: weights are immutable,
-  HF/vLLM/torch caches are per-stack host paths.
-- **`ipc: host` + sized `shm_size`** for NCCL/tensor-parallel setups.
-- **SGLang specifics** (from the production GLM-5.3/MTP TP2 stack, image
-  v0.4.3): the explicit `--cuda-graph-bs-decode` list has to enumerate
-  every batch size up to `--max-running-requests`; extend it when you
-  raise the cap. Mainline SGLang also exposes `--cuda-graph-bs` plus
-  graph padding, so check your version's capture/padding behaviour before
-  assuming a sparse capture list is safe. Mamba-cache slots for hybrid
-  models run ~5 per concurrent request (state + MTP intermediates);
-  host-RAM HiCache tier sized explicitly.
+- GPUs are pinned with CDI device names (`nvidia.com/gpu=N`). Never combine
+  `--gpus all` with `CUDA_VISIBLE_DEVICES`: CDI remaps injected GPUs to
+  0,1 inside the container, and mixing the two corrupts the mapping.
+- Backend ports bind the serving host's LAN IP, not 0.0.0.0. `0.0.0.0`
+  listens on every interface; the host firewall narrows what is reachable,
+  binding the intended interface removes the exposure.
+- Model weights are read-only mounts; HF/vLLM/torch caches are per-stack
+  host paths.
+- `ipc: host` and a sized `shm_size` for NCCL/tensor-parallel setups.
+- SGLang (GLM-5.3/MTP TP2 stack, image v0.4.3): `--cuda-graph-bs-decode`
+  enumerates every batch size up to `--max-running-requests`; extend the
+  list when raising the cap. Mainline SGLang also exposes `--cuda-graph-bs`
+  plus graph padding, so check your version's capture behaviour before
+  assuming a sparse list is safe. Mamba-cache slots run about 5 per
+  concurrent request (state + MTP intermediates). The host-RAM HiCache tier
+  is sized explicitly (32 GB).
 
-## Benchmarks
+## Benchmark setup
 
 `benching/bench_matrix.py` drives a concurrency × context-length matrix
-through the open-source **llm-inference-bench** harness (credit: Martin Vit,
+through the llm-inference-bench harness (Martin Vit,
 github.com/local-inference-lab/llm-inference-bench; clone it next to the
-script or point `BENCH_REPO` at it). The measuring, engine auto-detection and
-Prometheus cross-validation are upstream's; this layer adds the production
-preset (explicit contexts, concurrencies, output-token cap) and one-table
-collection. The API key is read from an env var *name* in this script;
-upstream's own `--api-key` flag is visible to same-host users via `ps`, so
-bench from a single-operator host or bench through the gateway.
+script or point `BENCH_REPO` at it). The measuring, engine auto-detection
+and Prometheus cross-validation are upstream's; this layer adds the
+production preset (explicit contexts, concurrencies, output-token cap) and
+one-table collection. The API key is read from an env var *name* in this
+script; upstream's own `--api-key` flag is visible to same-host users via
+`ps`, so bench from a single-operator host or bench through the gateway.
 
 Benchmark conditions (from the saved result files on the production node):
 
 - Harness: llm-inference-bench v0.4.32 @ `d115fee` (2026-09-01)
-- Output: 2,048 max tokens per request; sustained decode, 30 s per
-  matrix cell
+- Output: 2,048 max tokens per request; sustained decode, 30 s per matrix
+  cell
 - Sampling: engine defaults (temperature/top_p not pinned)
 - Prompts: scout request populates the prefix cache, measured requests
   reuse the same prompt; figures measure sustained decode
 - Results: decode table = aggregate decode tok/s across in-flight requests
   (the c1 column is single-stream; inter-token latencies quoted are
   single-stream p50/p99). Prefill table = prompt tok/s from client-measured
-  time-to-first-token on the scout request, single sample per cell;
-  131k cells cross-checked against the engines' Prometheus counters.
-- Engines: SGLang (ormandj `sglang-glm53-flash-sm120` v0.4.3),
-  vLLM (Blackwell build with b12x kernels; aux tier on
+  time-to-first-token on the scout request, single sample per cell; 131k
+  cells cross-checked against the engines' Prometheus counters
+- Single-stream inter-token latency: p50 6.8 ms, p99 7.2 ms, measured
+  across context lengths
+- Engines: SGLang (ormandj `sglang-glm53-flash-sm120` v0.4.3), vLLM
+  (Blackwell build with b12x kernels; aux tier on
   `vllm/vllm-openai:nightly`). Run dates: DeepSeek 2026-08-28, aux 35B
-  2026-09-01, GLM 2026-09-02/03 (the GLM result file's own metadata
-  records an older harness build than the pinned commit; prefill figures
-  are from the 09-03 rerun).
+  2026-09-01, GLM 2026-09-02/03 (the GLM result file's own metadata records
+  an older harness build than the pinned commit; prefill figures are from
+  the 09-03 rerun)
 - Speculative decoding: GLM rows ran with adaptive MTP (EAGLE, adaptive
   draft profile [3,5]) on SGLang; the aux 35B ran without MTP (draft MoE
   unsupported on its vLLM build); the DeepSeek DSpark r19 config's spec
   state at bench time is not recorded in the result file
 - Interconnect: PCIe 4.0 x16 on every GPU link, NODE topology, no
-  NVLink/P2P (the P2P registry overrides were verified but the fabric is
-  plain PCIe; TP2 traffic crosses the root complex)
+  NVLink/P2P (TP2 traffic crosses the root complex)
 - GPUs: TP2 pair = 325 W Max-Q cards; aux = one 600 W card
 
-Reference results from the production node (3× RTX PRO 6000, one Max-Q
-325 W pair for TP2 + one full 600 W card):
+Decode results (aggregate tok/s):
 
 | Model · engine | c1 | c2 | c4 | 131k ctx (c1) |
 |---|---|---|---|---|
@@ -163,145 +144,95 @@ Prefill throughput (prompt tok/s, same runs, client-measured TTFT):
 | DeepSeek-V4-Flash · TP2 vLLM | 5,734 | 5,582 | 6,363 | 6,793 | 6,583 |
 | Qwen3.6-35B-A3B NVFP4 · 1 GPU vLLM | 22,553 | 20,767 | 17,514 | 13,859 | 9,432 |
 
-The GLM prefill row is from the 2026-09-03 rerun (server-validated each
-cell): the 09-02 scan showed a 32k/64k dip (3.7k/4.3k) that did not repeat
-in either rerun, so it is treated as sample noise from concurrent load.
+The GLM prefill row is from the 2026-09-03 rerun, server-validated on each
+cell. The 09-02 scan showed a 32k/64k dip (3.7k/4.3k) that did not repeat in
+either rerun; treated as sample noise from concurrent load.
 
-Readings that drove decisions:
+Qwen3.6-35B-A3B had the highest c4 throughput in this test, so background
+traffic runs there and the TP2 pair is reserved for interactive traffic.
+GLM-5.3-Flash c1 decode changed from 140–153 tok/s at short context to
+132 tok/s at 131k, which set the long-context expectations for the
+interactive tier. Prefill was cross-checked against the engines' Prometheus
+counters: 5.9k tok/s client-measured vs 6.2k server-side on an 83.5k-token
+prompt, under 5% gap.
 
-- The A3B auxiliary model has the highest c4 aggregate throughput in this
-  matrix: 770 tok/s on one GPU. That is why background agents are routed
-  there instead of consuming TP2 capacity.
-- GLM c1 decode fell only ~6% from short context to 131k (140→132 tok/s)
-  on this stack; capacity planning does not blow up at long context.
-- Single-stream inter-token latency is tight at every context (p50 6.8 ms,
-  p99 7.2 ms); streaming quality held while background jobs ran on the
-  third GPU during the validation runs.
-- Prefill differs sharply by tier: the 1-GPU 35B NVFP4 prefills at
-  22.5k tok/s short-context (3-4x either TP2 pair) and still clears
-  9.4k at 131k; both TP2 pairs hold roughly flat ~5.2-6.8k across the
-  whole range.
-- Prefill cross-checked server-side: 5.9k tok/s client-measured vs 6.2k on
-  the engine's own Prometheus counters (83.5k-token prompt, <5% gap).
+## Incidents
 
-## The postmortems
+Two incidents led to changes in the current setup.
 
-Both happened on this node; I kept them here because the failure modes
-generalise to any production ML deployment. The second incident's rule is
-about unpinned fall-through: with a hard pin there is no default route onto
-the interactive pair. The gateway's background group still contains a
-capped TP2 overflow member (rate limits + `max_parallel_requests: 1`
-bound it), which is deliberate capacity engineering, distinct from an
-unpinned default route:
+- [Rollback erased diagnostics during a 1M-context rollout](postmortems/2026-08-29-max-model-len-boot-failure.md):
+  the 1M configuration failed to boot, the automatic rollback restarted the
+  container and destroyed the boot logs, so the startup failure was never
+  root-caused. Logs are now captured before any revert; deliberate restarts
+  require approval; risky changes cut over on a spare port.
+- [Unpinned background route stalled an interactive session](postmortems/2026-08-31-aux-compaction-stall.md):
+  a compaction job followed the gateway's default route onto the TP2 pair
+  and stalled a live session for ~10 min; the auxiliary GPU had spare
+  capacity throughout. Six task types are now pinned by name, and the
+  standing rule distinguishes unpinned routes from bounded, explicit
+  overflow.
 
-- **[Rollback destroyed the evidence](postmortems/2026-08-29-max-model-len-boot-failure.md)**:
-  a 1M-context change failed to boot, the automatic rollback reverted and
-  restarted, and the logs explaining *why* were destroyed with the container.
-  Root cause was never identified. Fix: capture complete logs BEFORE any
-  revert; deliberate restarts of containers serving live traffic are
-  human-approved; risky changes cut over on a spare port, never in place.
-- **[Aux task stalled interactive traffic](postmortems/2026-08-31-aux-compaction-stall.md)**:
-  the auxiliary tier had no hard pin, so a background compaction job fell
-  through the gateway's default route onto the primary TP2 pair (thinking
-  mode on) and stalled a live session ~10 min, while the auxiliary model's
-  dedicated GPU sat with ample headroom. The bug was the fall-through path,
-  not capacity; the fix removes it: six task types pinned by name, no
-  default route to the primary pair. A full aux tick went from stalling
-  sessions to ~35 s.
+## Operating rules
 
-## Operating rules (all from incidents on this node)
+1. Probe risky changes on a spare port and cut over in one step; the
+   healthy production path is never mutated in place.
+2. Restart the gateway from a detached script that health-polls and rolls
+   back, never from a session that dies with it.
+3. Deliberate restarts of containers serving live traffic are explicit,
+   human-approved actions. `restart: unless-stopped` covers crash recovery
+   only.
+4. Capture complete logs before any revert; the rollback restarts the
+   container.
+5. Version-pin engine images and gateway releases. The examples pin tested
+   tags; production files add digests.
 
-1. **Probe on a spare port first; cut over in one step.** Never mutate the
-   healthy production path in place.
-2. **The gateway you're running through is a dependency of your own tooling**:
-   restart it via a detached script that health-polls and auto-rolls-back,
-   never from inside a session that dies with it.
-3. **Deliberate restarts of containers serving live traffic are explicit,
-   human-approved actions.** `restart: unless-stopped` covers crash
-   recovery only; configuration changes are rolled out by cut over, not by
-   restarting the healthy path in place.
-4. **Capture logs before any revert.** The rollback path is part of the
-   system and must preserve evidence.
-5. **Version-pin everything.** Engine images and gateway releases alike;
-   floating tags and `*-stable` channels have both silently shipped old
-   versions here. (The examples pin tested tags; production files add
-   digests.)
+## Operation
 
-## How the stack is operated (agent-run, human-gated)
+The node is operated by agents. Hermes runs on the node itself and its
+sessions ride the gateway; some stacks are stood up and maintained from
+Cursor sessions on the workstation, driven by external models. The gates
+below apply to either surface.
 
-The operator of this node is an LLM agent (Hermes) that runs on the
-platform it manages: its own sessions ride the gateway above, served by
-the stacks in `serving/`. Not every deployment runs from there, though:
-some stacks are stood up and maintained from Cursor sessions on the
-workstation, driven by external frontier models. The operating rules
-below are deliberately executor-agnostic, the same gates apply whether
-the agent making the change is the locally served one or a cloud model
-in an IDE session. The node is both the serving infrastructure and one
-of its own agents' runtime, which makes the rules load-bearing rather
-than decorative. The split that keeps that workable:
-
-- **Watchers are autonomous; actors are not.** Cron watchdogs poll
-  gateway health and verify the running image against the compose pin
-  every 10 minutes. They only report (distinct exit codes, alert on
-  drift or downtime) and deliberately hold no restart or patch
-  capability.
-- **Config is the autonomous surface.** Routing pins, aliases, rate caps
-  and context limits live in the DB-less gateway config; the agent
-  applies routing changes as config edits (several take effect without a
-  restart) and reverts them with git.
-- **Live serving containers are the human gate.** Restarts, recreates
-  and cutovers on production paths are explicit, approved actions. That
-  gate exists because automation here once destroyed its own evidence
-  (the rollback postmortem); the watchers exist so that approvals can be
-  fast, not blind.
-- **Measurement closes the loop.** The harness, matrix preset and
-  Prometheus cross-validation produce the benchmark numbers above; the
-  result files are kept as receipts, and routing and model decisions
-  cite them (the aux-tier pin exists because the c4 matrix said the
-  35B MoE had headroom the TP2 pair did not).
-- **Upstream intel is monitored, not guessed.** Production profiles
-  (the DeepSeek DSpark r19 defaults, the SGLang image versions) are
-  tracked from upstream recipe repos and community config notes, then
-  verified on this node before adoption.
+- Cron watchdogs poll gateway health and check the running image against
+  the compose pin every 10 minutes. They report only; they hold no restart
+  or patch capability.
+- Routing pins, aliases, rate caps and context limits are config edits in
+  the DB-less gateway config, reverted with git. Several take effect
+  without a restart.
+- Restarts, recreates and cutovers of production serving containers are
+  explicit, human-approved actions.
+- Benchmark result files are kept as receipts; routing and model decisions
+  cite them.
+- Production profiles (the DeepSeek DSpark r19 defaults, the SGLang image
+  versions) are tracked from upstream recipe repos and verified on this
+  node before adoption.
 
 ### Deploying a model
 
-Model deployments run the same gate pattern, agent-executed end to end
-with human approval at the serving step, from either surface: the local
-Hermes agent or a Cursor session on the workstation running external
-models. The loop, as actually run for the current GLM quant stack:
+Deployments run the same gate pattern from either surface. The loop as run
+for the current GLM quant stack:
 
-1. **Track the recipe, pin everything.** Upstream recipe repo and producer
-   image tag are pinned; the base checkpoint revision is pinned; the
-   expected artifact is written down as a contract (shard count, tensor
-   count, exact byte total) before anything moves.
-2. **Verify remotely before downloading.** The HF manifest is checked
-   against the contract first; the 321-vs-642 GB storage-figure
-   discrepancy was resolved with a metadata query, zero bytes moved.
-3. **Gate on capacity, then download and verify.** Disk and GPU headroom
-   checks run before staging; after download, the index is checked
-   against the contract (tensor count, byte total), and produced output
-   is verified shard-by-shard SHA256 against the published manifest.
-   Byte-exact establishes identity with the published checkpoint; no
-   separate equivalence validation is needed.
-4. **Preflight before the real run.** Quantization producers run with a
-   preflight-only flag first; investigations (like the KV-scale trace)
-   read the pinned image's code before touching a live path.
-5. **Serve on a spare port; cut over on approval.** New stacks come up
-   beside the healthy path and only take traffic after an explicit go;
-   superseded containers are held, not deleted, and image cleanup is a
-   separate deliberate pass.
-
-The same receipts discipline applies: deployment decisions cite verified
-artifacts (SHA256 manifests, disk checks, probe results), and two of the
-rules above (capture logs before revert, no unpinned routes) exist as
-rules because the incidents in the postmortems showed what happens
-without them.
+1. Upstream recipe repo, producer image tag and base checkpoint revision
+   are pinned; the expected artifact is written down first (shard count,
+   tensor count, byte total).
+2. The HF manifest is checked against that contract before download; a
+   321-vs-642 GB storage-figure discrepancy was resolved with a metadata
+   query, zero bytes moved.
+3. Disk and GPU headroom checks run before staging; after download the
+   index is checked against the contract and produced output is verified
+   shard-by-shard SHA256 against the published manifest. Byte-exact
+   establishes identity with the published checkpoint; no separate
+   equivalence validation is needed.
+4. Quantization producers run with a preflight-only flag first; the
+   KV-scale investigation read the pinned image's code before touching a
+   live path.
+5. New stacks come up on a spare port and take traffic only after an
+   explicit go; superseded containers are held, not deleted, and image
+   cleanup is a separate pass.
 
 ## Credits
 
-The serving stack stands on open-source work from the local inference
-community; the pieces this node actually runs:
+Pieces of this stack from the local inference community:
 
 - **fester** (Martin Vit,
   [voipmonitor](https://github.com/voipmonitor)): the docker containers
@@ -325,16 +256,14 @@ community; the pieces this node actually runs:
   ([nvidia/Qwen3.6-35B-A3B-NVFP4](https://huggingface.co/nvidia/Qwen3.6-35B-A3B-NVFP4))
   that serves background traffic.
 
-## Honest limitations
+## Limitations
 
-- Single node, 3 GPUs; not a multi-node fabric study. P2P/NVLink bandwidth
-  measurement was attempted and failed on a missing CUDA runtime lib; the
-  NVIDIA P2P registry overrides were verified instead.
-- The 1M-context boot failure was never root-caused (evidence destroyed by
-  the rollback, which is the point of the postmortem).
-- Numbers are from one operator's node; treat them as a worked example of
-  the *method* (matrix, cross-validation, tier economics), not as
-  generalisable device figures.
+- Single node, 3 GPUs. P2P/NVLink bandwidth measurement failed on a missing
+  CUDA runtime library; the NVIDIA P2P registry overrides were verified
+  instead.
+- The 1M-context startup failure was not root-caused because rollback
+  removed the relevant logs.
+- Results are from this node only.
 
 ## License
 

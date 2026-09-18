@@ -46,7 +46,7 @@ model_list:
           thinking: true
           # No reasoning_effort pin here: the template scales thinking to the
           # task (adaptive). Pinning "high" underthinks hard prompts; "max"
-          # burns tokens on easy ones (measured: README "adaptive reasoning").
+          # burns tokens on easy ones (measured: README "Routing").
     model_info:
       max_input_tokens: 131072
     router_params:
