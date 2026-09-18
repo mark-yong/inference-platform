@@ -34,12 +34,12 @@ diagnosis automation were treated as separate concerns; they are not.
 1. Standing rule for any context-window or capacity change: capture complete
    docker logs BEFORE any revert or restart can touch the container.
 2. Container lifecycle policy: containers serving live traffic are never
-   recreated by automation; restarts are explicit, human-approved actions.
+   recreated by automation; deliberate restarts are explicit, human-approved actions.
 3. Cutover pattern for risky changes: stand up the new configuration on a spare
    port, probe it, then cut over; never mutate the healthy production path in
    place.
 
-## Why this story belongs in interviews
+## Why this generalises
 
 It is a real production incident where the correct answer was a governance
 change, not a config tweak; the same lesson that governs production ML

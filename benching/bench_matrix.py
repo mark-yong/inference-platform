@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
-"""Generate a concurrency x context-length benchmark matrix for vLLM/SGLang.
+"""Run a concurrency x context-length matrix over llm-inference-bench.
 
-A thin config layer over the excellent open-source llm-inference-bench
-harness (credit: Martin Vit, https://github.com/local-inference-lab/
-llm-inference-bench). This script only generates and runs the matrix and
-collects per-cell aggregate/single-stream tok/s into one table; the
-measuring itself, Prometheus cross-validation, and engine auto-detection
-are the upstream harness's.
+Thin preset layer over the upstream harness (Martin Vit,
+https://github.com/local-inference-lab/llm-inference-bench): upstream does
+the measuring, engine auto-detection, and Prometheus cross-validation; this
+script picks the production preset (contexts, concurrencies, output-token
+cap) and invokes upstream's llm_decode_bench.py once per
+(concurrency, context) cell, then collects the sustained-decode figures
+into one table.
+
+Interface matched to upstream at the version the README pins
+(v0.4.29, commit d115fee): entry point llm_decode_bench.py, matrix flags
+--concurrency/--contexts, output flag --output, summary in
+summary_table[context][concurrency] (tok/s).
 
 Reference numbers this matrix produced on 3x RTX PRO 6000 (96 GB) are in
 README.md "Benchmarks".
@@ -14,11 +20,14 @@ README.md "Benchmarks".
 Usage:
   python3 bench_matrix.py --base-url http://serving-host:8000/v1 \
       --model primary-chat --api-key-env VLLM_API_KEY_PRIMARY \
-      --concurrency 1 2 4 --ctx 1024 32768 131072
+      --concurrency 1 2 4 --contexts 1024 32768 131072
 
 Environment:
-  The API key is read from the env var named by --api-key-env (never a CLI
-  arg; argv leaks via ps).
+  The API key is read from the env var named by --api-key-env, so the key
+  never appears in THIS script's argv. The upstream harness itself takes
+  --api-key as an argument, which is visible to same-host users via ps:
+  run benchmarks from a single-operator host, or put auth at the gateway
+  and bench through it.
 """
 import argparse
 import csv
@@ -29,56 +38,89 @@ import sys
 import time
 
 DEFAULT_CONC = [1, 2, 4]
-DEFAULT_CTX = [1024, 32768, 131072]
-# upstream harness repo cloned next to this script (or system-installed)
-BENCH_REPO = os.environ.get("BENCH_REPO", "./llm-inference-bench")
+DEFAULT_CONTEXTS = [1024, 32768, 131072]
+DEFAULT_MAX_TOKENS = 2048  # per-request output cap used for the README tables
+# upstream harness repo cloned next to this script (or BENCH_REPO points at it)
+BENCH = os.environ.get("BENCH_REPO", "./llm-inference-bench")
+ENTRY = os.path.join(BENCH, "llm_decode_bench.py")
 
 
-def run_cell(base_url, model, api_key, conc, ctx, outdir, timeout=1800):
-    """Run one (concurrency, context) cell; return dict or None on failure."""
+def run_cell(base_url, model, api_key, conc, ctx, max_tokens, outdir,
+             timeout=3600):
+    """Run one (concurrency, context) cell via upstream; return row or None."""
     label = f"c{conc}-ctx{ctx}"
     out = os.path.join(outdir, f"{label}.json")
     cmd = [
-        sys.executable, os.path.join(BENCH_REPO, "benchmark.py"),
-        "--host", base_url, "--api-key", api_key,
+        sys.executable, ENTRY,
+        "--host", base_url,
+        "--api-key", api_key,
         "--model", model,
         "--concurrency", str(conc),
-        "--context-length", str(ctx),
-        "--json-out", out,
+        "--contexts", str(ctx),
+        "--max-tokens", str(max_tokens),
+        "--output", out,
+        "--display-mode", "plain",
+        "--no-hw-monitor",
     ]
     t0 = time.time()
-    p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        print(f"  {label}: TIMEOUT", flush=True)
+        return None
     dt = time.time() - t0
     if p.returncode != 0:
-        print(f"  {label}: FAILED ({p.stderr.strip()[-120:]})", flush=True)
+        tail = (p.stderr or p.stdout or "").strip()[-140:]
+        print(f"  {label}: FAILED ({tail})", flush=True)
         return None
     try:
         with open(out) as f:
-            r = json.load(f)
+            result = json.load(f)
     except Exception:
-        print(f"  {label}: no output json", flush=True)
+        print(f"  {label}: no output json at {out}", flush=True)
         return None
-    row = {
-        "cell": label, "concurrency": conc, "context": ctx,
-        "agg_tok_s": r.get("total_token_throughput")
-                     or r.get("aggregate_output_throughput"),
-        "single_tok_s": r.get("output_throughput")
-                        or r.get("per_request_output_throughput_mean"),
-        "wall_s": round(dt, 1),
-    }
-    print(f"  {label}: agg={row['agg_tok_s']} tok/s single={row['single_tok_s']} "
-          f"tok/s ({dt:.0f}s)", flush=True)
-    return row
+    agg = sustained_decode(result, conc, ctx)
+    if agg is None:
+        print(f"  {label}: ran, but no sustained-decode figure in summary_table",
+              flush=True)
+        return None
+    print(f"  {label}: agg={agg:.0f} tok/s ({dt:.0f}s)", flush=True)
+    return {"cell": label, "concurrency": conc, "context": ctx,
+            "agg_tok_s": round(agg, 1), "wall_s": round(dt, 1)}
+
+
+def sustained_decode(result, conc, ctx):
+    """Sustained-decode tok/s for one cell from upstream's summary_table.
+
+    summary_table maps context -> {concurrency: tok_s}. Keys are strings;
+    a run with --contexts 0 reports the no-context cell as "0".
+    """
+    table = result.get("summary_table")
+    if not isinstance(table, dict):
+        return None
+    row = table.get(str(ctx))
+    if not isinstance(row, dict):
+        for candidate in table.values():
+            if isinstance(candidate, dict) and str(conc) in candidate:
+                row = candidate
+                break
+    if not isinstance(row, dict):
+        return None
+    value = row.get(str(conc))
+    return float(value) if isinstance(value, (int, float)) else None
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--base-url", required=True)
+    ap.add_argument("--base-url", required=True,
+                    help="serving endpoint, e.g. http://serving-host:8000/v1")
     ap.add_argument("--model", required=True)
     ap.add_argument("--api-key-env", default="BENCH_API_KEY",
                     help="name of the env var holding the API key")
     ap.add_argument("--concurrency", type=int, nargs="+", default=DEFAULT_CONC)
-    ap.add_argument("--ctx", type=int, nargs="+", default=DEFAULT_CTX)
+    ap.add_argument("--contexts", type=int, nargs="+", default=DEFAULT_CONTEXTS)
+    ap.add_argument("--max-tokens", type=int, default=DEFAULT_MAX_TOKENS,
+                    help="per-request output cap (explicit, not upstream default)")
     ap.add_argument("--outdir", default="results")
     ap.add_argument("--csv", default="results/matrix.csv")
     args = ap.parse_args()
@@ -86,16 +128,20 @@ def main():
     api_key = os.environ.get(args.api_key_env)
     if not api_key:
         sys.exit(f"set {args.api_key_env} (never pass keys as CLI args)")
+    if not os.path.isfile(ENTRY):
+        sys.exit(f"upstream harness not found at {ENTRY}; clone "
+                 "https://github.com/local-inference-lab/llm-inference-bench "
+                 "next to this script or point BENCH_REPO at it")
     os.makedirs(args.outdir, exist_ok=True)
 
-    print(f"matrix: conc={args.concurrency} x ctx={args.ctx} "
-          f"on {args.model} @ {args.base_url}")
+    print(f"matrix: conc={args.concurrency} x ctx={args.contexts} "
+          f"max_tokens={args.max_tokens} on {args.model} @ {args.base_url}")
     rows = []
     for conc in args.concurrency:
-        for ctx in args.ctx:
+        for ctx in args.contexts:
             print(f"-- c{conc} ctx{ctx}", flush=True)
             row = run_cell(args.base_url, args.model, api_key, conc, ctx,
-                           args.outdir)
+                           args.max_tokens, args.outdir)
             if row:
                 rows.append(row)
 
@@ -106,19 +152,22 @@ def main():
             w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
             w.writeheader()
             w.writerows(rows)
-        print(f"\n{len(rows)}/{len(args.concurrency) * len(args.ctx)} cells ok "
-              f"-> {path}")
-        print("table:")
-        print(f"{'model':<24}{'c1':>10}{'c2':>10}{'c4':>10}")
-        # cheap pivot: aggregate tok/s by concurrency
-        by_conc = {}
+        print(f"\n{len(rows)}/{len(args.concurrency) * len(args.contexts)} "
+              f"cells ok -> {path}")
+        # pivot: rows = context, columns = concurrency (aggregate tok/s)
+        by_ctx = {}
         for r in rows:
-            by_conc.setdefault(r["concurrency"], []).append(r["agg_tok_s"])
-        for conc in sorted(by_conc):
-            vals = [v for v in by_conc[conc] if v]
-            print(f"{args.model:<24}{min(vals) if vals else '-':>10}"
-                  f"{sum(vals) / len(vals) if vals else '-':>10.0f}"
-                  f"{max(vals) if vals else '-':>10}")
+            by_ctx.setdefault(r["context"], {})[r["concurrency"]] = r["agg_tok_s"]
+        concs = sorted({r["concurrency"] for r in rows})
+        header = "ctx".ljust(8) + "".join(f"c{c:>10}" for c in concs)
+        print(header)
+        for ctx in sorted(by_ctx):
+            line = str(ctx).ljust(8)
+            for c in concs:
+                v = by_ctx[ctx].get(c)
+                line += f"{v:>11.0f}" if v is not None else f"{'-':>11}"
+            print(line)
+        print("(aggregate decode tok/s; c1 column is single-stream)")
     sys.exit(0 if rows else 1)
 
 

@@ -1,0 +1,141 @@
+# SGLang TP2 serving stack (GLM-5.3-Flash class, Blackwell SM120) - sanitized
+# production example.
+#
+# Source pattern: the production stack on this node (unprivileged LXC, NVIDIA
+# CDI), engine image ormandj/sglang-glm53-flash-sm120 v0.4.3 (pinned; digest in
+# the production file). This example carries the structure and the flags that
+# matter; hosts, model paths and tuning values are placeholders.
+#
+# Two upstream config rules that matter more than they look:
+# 1. --cuda-graph-bs-decode must enumerate EVERY batch size up to
+#    --max-running-requests (this stack runs MTP speculative decoding; raise
+#    MAX_RUNNING_REQUESTS and you must extend the graph list to match).
+#    Mainline SGLang also exposes --cuda-graph-bs plus graph padding; check
+#    your version's capture/padding behaviour before assuming a sparse list
+#    is safe.
+# 2. --max-mamba-cache-size is ~5 recurrent-state slots per concurrent
+#    request (state + MTP intermediates).
+# 3. Prefill graphs are breakable at 64/128-token tails (v0.4.0+); longer
+#    prefills stay on 4,096-token chunks (SGLANG_BCG_RAGGED_*).
+#
+# HiCache (host-RAM prefix cache tier): --enable-hierarchical-cache with
+# --hicache-size 32; needs ~32 GB free host RAM.
+
+services:
+  glm53-flash-sm120:
+    image: ghcr.io/ormandj/sglang-glm53-flash-sm120:v0.4.3
+    container_name: glm53-flash-sm120
+    pull_policy: missing
+    init: true
+    ipc: host
+    restart: unless-stopped   # crash recovery only; deliberate restarts are human-approved
+    entrypoint:
+      - sglang
+    command:
+      - serve
+      - /models/glm53
+      - --served-model-name
+      - glm-5.3-flash
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --tp
+      - "2"
+      - --quantization
+      - modelopt_mixed
+      - --enable-multimodal
+      # vision crash fix (required on this stack):
+      - --limit-mm-data-per-request
+      - '{"image": 2, "video": 0}'
+      - --mm-process-config
+      - '{"image": {"max_image_tokens": 7800}}'
+      - --image-processor-backend
+      - torchvision
+      - --mm-preprocessing-device
+      - cpu
+      - --moe-runner-backend
+      - flashinfer_cutlass
+      - --disable-custom-all-reduce
+      - --attention-backend
+      - dsa
+      - --dsa-prefill-backend
+      - flashinfer_sparse_mla
+      - --dsa-decode-backend
+      - flashinfer_sparse_mla
+      - --kv-cache-dtype
+      - fp8_e4m3
+      - --context-length
+      - "524288"
+      - --max-total-tokens
+      - "524288"
+      - --mem-fraction-static
+      - "0.99"
+      - --chunked-prefill-size
+      - "4096"
+      - --max-prefill-tokens
+      - "4096"
+      - --max-running-requests
+      - "4"
+      - --max-mamba-cache-size
+      - "28"
+      - --cuda-graph-backend-prefill
+      - breakable
+      - --cuda-graph-bs-prefill
+      - "64"
+      - "128"
+      - --cuda-graph-backend-decode
+      - full
+      - --cuda-graph-bs-decode
+      - "1"
+      - "2"
+      - "3"
+      - "4"
+      - --enable-hierarchical-cache
+      - --hicache-size
+      - "32"
+      # adaptive MTP speculative decoding (draft profile [3,5]):
+      - --speculative-algorithm
+      - EAGLE
+      - --speculative-num-steps
+      - "5"
+      - --speculative-eagle-topk
+      - "1"
+      - --speculative-num-draft-tokens
+      - "6"
+      - --speculative-adaptive
+      - --speculative-adaptive-config
+      - /etc/glm53-adaptive/adaptive.json
+      - --reasoning-parser
+      - glm45
+      - --tool-call-parser
+      - glm47
+      - --enable-metrics
+      - --enable-cache-report
+      - --sleep-on-idle
+    shm_size: 64g
+    env_file:
+      - .env
+    environment:
+      PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+      # PCIe IPC allreduce: TP2 on a NUMA-node fabric without NVLink/P2P
+      SGLANG_ENABLE_PCIE_IPC_ALLREDUCE: "1"
+      SGLANG_PCIE_IPC_MAX_NUMEL: "786432"
+      SGLANG_LM_HEAD_FP8: "1"
+      # breakable prefill graphs: long prefills stay on 4,096-token chunks
+      SGLANG_BCG_RAGGED_SHAPES: "1"
+      SGLANG_BCG_RAGGED_MAX_BS: "1"
+      SGLANG_BCG_SEPARATE_CAPTURE_SESSIONS: "1"
+      TORCHINDUCTOR_CACHE_DIR: /root/.cache/torchinductor
+      TRITON_CACHE_DIR: /root/.cache/triton
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+      TZ: Asia/Singapore
+    ports:
+      - "192.168.1.50:8013:8000"   # <- your serving host's LAN IP (example)
+    volumes:
+      - /models/glm53:/models/glm53:ro
+      - ./cache:/root/.cache
+      - ./adaptive.json:/etc/glm53-adaptive/adaptive.json:ro
+    devices:
+      - nvidia.com/gpu=0
+      - nvidia.com/gpu=1

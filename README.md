@@ -16,11 +16,18 @@ notes in the comments are intact.
 
 ```
 gateway/config.example.yaml   LiteLLM routing governance: tiers, pins, weighted
-                              background group, per-task aliases (DB-less mode)
+                              background group (aux GPU normal, TP2 capped
+                              overflow), per-task aliases (DB-less mode)
 serving/
   docker-compose.example.yml  vLLM stacks: TP2 primary + single-GPU aux,
-                              CDI GPU pinning, LAN-IP binds, cache layout
-  compose.env.example         env template (keys never in-file)
+                              CDI GPU pinning, LAN-IP binds, pinned engine
+                              image, backend auth via VLLM_API_KEY
+  docker-compose.sglang-glm53.example.yml
+                              SGLang TP2 stack (GLM-5.3/MTP class): adaptive
+                              MTP, cuda-graph bs list, mamba cache sizing,
+                              HiCache, PCIe allreduce env
+  compose.env.example         env templates, one file per service (keys
+                              never in-file; vLLM reads VLLM_API_KEY)
 benching/
   bench_matrix.py             concurrency × context-length matrix runner
                               (thin layer over llm-inference-bench)
@@ -40,9 +47,13 @@ Three tiers, enforced in the gateway config itself:
    (summarisation, titling, extraction, triage...) gets a **named pin** to
    this tier. There is no fall-through route to the primary pair.
 3. **Background**: a weighted multi-deployment group (`weight: 10` on the
-   independent GPU, capped fallbacks on the big pairs) so background traffic
-   survives TP2-pair maintenance while staying rate-limited (rpm caps +
-   `max_parallel_requests: 1`).
+   independent GPU) plus a heavily capped TP2 overflow member (`weight: 1`,
+   `rpm: 4`, `max_parallel_requests: 1`) so background traffic survives
+   aux-GPU maintenance while interactive capacity stays bounded. Weight is
+   a selection probability, not a standby flag: the caps, not the weight,
+   are what bound what background can take from the TP2 pair when the
+   overflow member is picked. If you want the isolation rule below with
+   zero exceptions, drop the TP2 member and route overflow explicitly.
 
 The 2026-08-31 postmortem is why the tiers exist: the gateway's default
 route let an unpinned background job onto the TP2 pair, and a live session
@@ -97,9 +108,11 @@ Other patterns worth lifting from the annotated config:
 through the open-source **llm-inference-bench** harness (credit: Martin Vit,
 github.com/local-inference-lab/llm-inference-bench; clone it next to the
 script or point `BENCH_REPO` at it). The measuring, engine auto-detection and
-Prometheus cross-validation are upstream's; this layer adds matrix
-generation, one-table collection, and env-based key handling (keys are read
-from an env var *name*, never argv (argv leaks via `ps`)).
+Prometheus cross-validation are upstream's; this layer adds the production
+preset (explicit contexts, concurrencies, output-token cap) and one-table
+collection. The API key is read from an env var *name* in this script;
+upstream's own `--api-key` flag is visible to same-host users via `ps`, so
+bench from a single-operator host or bench through the gateway.
 
 Benchmark conditions (from the saved result files on the production node):
 
@@ -166,14 +179,19 @@ Readings that drove decisions:
 ## The postmortems
 
 Both happened on this node; I kept them here because the failure modes
-generalise to any production ML deployment:
+generalise to any production ML deployment. The second incident's rule is
+about unpinned fall-through: with a hard pin there is no default route onto
+the interactive pair. The gateway's background group still contains a
+capped TP2 overflow member (rate limits + `max_parallel_requests: 1`
+bound it), which is deliberate capacity engineering, distinct from an
+unpinned default route:
 
 - **[Rollback destroyed the evidence](postmortems/2026-08-29-max-model-len-boot-failure.md)**:
   a 1M-context change failed to boot, the automatic rollback reverted and
   restarted, and the logs explaining *why* were destroyed with the container.
   Root cause was never identified. Fix: capture complete logs BEFORE any
-  revert; containers serving live traffic are never recreated by automation;
-  risky changes cut over on a spare port, never in place.
+  revert; deliberate restarts of containers serving live traffic are
+  human-approved; risky changes cut over on a spare port, never in place.
 - **[Aux task stalled interactive traffic](postmortems/2026-08-31-aux-compaction-stall.md)**:
   the auxiliary tier had no hard pin, so a background compaction job fell
   through the gateway's default route onto the primary TP2 pair (thinking
@@ -190,13 +208,16 @@ generalise to any production ML deployment:
 2. **The gateway you're running through is a dependency of your own tooling**:
    restart it via a detached script that health-polls and auto-rolls-back,
    never from inside a session that dies with it.
-3. **Containers serving live traffic are never recreated by automation.**
-   Restarts are explicit, human-approved actions.
+3. **Deliberate restarts of containers serving live traffic are explicit,
+   human-approved actions.** `restart: unless-stopped` covers crash
+   recovery only; configuration changes are rolled out by cut over, not by
+   restarting the healthy path in place.
 4. **Capture logs before any revert.** The rollback path is part of the
    system and must preserve evidence.
 5. **Version-pin everything.** Engine images and gateway releases alike;
    floating tags and `*-stable` channels have both silently shipped old
-   versions here.
+   versions here. (The examples pin tested tags; production files add
+   digests.)
 
 ## Credits
 

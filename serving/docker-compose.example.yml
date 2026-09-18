@@ -1,22 +1,27 @@
 # Serving node: Linux containers + NVIDIA (LXC or VM or bare metal).
 
 # Pattern validated in production on an unprivileged LXC with NVIDIA CDI:
-# - bind a specific LAN IP, NOT 0.0.0.0: the host firewall only exposes
-#   specific ports; 0.0.0.0 would advertise stacks that should be reachable
-#   only from the gateway host
+# - bind a specific LAN IP, NOT 0.0.0.0: 0.0.0.0 makes a port listen on
+#   every interface; bind only the interface the gateway reaches it on
 # - pin GPUs via CDI device names (nvidia.com/gpu=N); do NOT also set
 #   CUDA_VISIBLE_DEVICES; CDI remaps injected GPUs to 0,1 inside the
 #   container, and mixing both mechanisms corrupts the mapping
 # - shm_size + ipc: host for vLLM/NCCL TP setups
 # - model weights mounted read-only; caches read-write on host paths
+# - restart: unless-stopped covers crash recovery only; any deliberate
+#   restart/recreate of a serving live traffic is a human-approved action
+#   (see README "Operating rules")
 
+# Pinned engine image (the tested version), not :latest. vLLM enables
+# bearer auth only via --api-key or the VLLM_API_KEY variable name, so
+# compose.env maps the per-service secret to that name.
 services:
   primary-chat:
-    image: vllm/vllm-openai:latest
+    image: vllm/vllm-openai:v0.11.0
     container_name: primary-chat
     restart: unless-stopped
     env_file:
-      - ./compose.env            # VLLM_API_KEY_PRIMARY, HF cache overrides
+      - ./compose.env            # VLLM_API_KEY (the exact name vLLM reads)
     environment:
       - HF_HUB_OFFLINE=1
       - VLLM_LOGGING_LEVEL=INFO
@@ -44,11 +49,11 @@ services:
       --disable-log-requests
 
   aux-35b:
-    image: vllm/vllm-openai:latest
+    image: vllm/vllm-openai:v0.11.0
     container_name: aux-35b
     restart: unless-stopped
     env_file:
-      - ./compose.env
+      - ./compose.env.aux        # separate file: aux gets only its own key
     environment:
       - HF_HUB_OFFLINE=1
       - NVIDIA_VISIBLE_DEVICES=2

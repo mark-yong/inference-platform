@@ -28,7 +28,7 @@ on its own GPU had ample headroom; it was a routing governance gap.
 3. Verified: after the pin, a full auxiliary tick (17 fetches plus digests)
    completes in ~35s on the dedicated GPU with no interactive contention.
 
-## Why this story belongs in interviews
+## Why this generalises
 
 Multi-model serving fails quietly: everything works until two workloads meet
 on one GPU. The durable fix is routing policy at the gateway layer; the same
