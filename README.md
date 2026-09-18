@@ -2,14 +2,14 @@
 
 **Operating model for a private multi-GPU LLM serving node: serving configs, gateway routing governance, benchmark harness, and the postmortems that shaped it.**
 
-Not a tutorial repo: this is the operating pattern of a single-node
-self-hosted AI platform running 24/7: 3× RTX PRO 6000 (96 GB each) on an
-EPYC server under Proxmox, ~15 containers, four open-weight model families in
-production across vLLM / SGLang / llama.cpp, every call served locally
-(no third-party LLM API in the serving path). The configs here are
-sanitised, annotated forms of the live production files: hosts parameterised,
-secrets moved to env, model names genericised; the structure and the
-hard-won comments are intact.
+Not a tutorial repo: this is how I run a single-node self-hosted AI
+platform 24/7: 3× RTX PRO 6000 (96 GB each) on an EPYC server under
+Proxmox, ~15 containers, four open-weight model families in production
+across vLLM / SGLang / llama.cpp, every call served locally (no
+third-party LLM API in the serving path). The configs here are sanitised,
+annotated forms of the live production files: hosts parameterised, secrets
+moved to env, model names genericised; the structure and the incident
+notes in the comments are intact.
 
 ## What's in the box
 
@@ -32,7 +32,7 @@ postmortems/
 
 ## The routing governance story (why the gateway config looks like this)
 
-Three tiers, enforced at the gateway rather than by convention:
+Three tiers, enforced in the gateway config itself:
 
 1. **Interactive**: the primary chat model on a dedicated TP2 GPU pair.
 2. **Auxiliary**: a small MoE on its own GPU; every background task type
@@ -43,10 +43,10 @@ Three tiers, enforced at the gateway rather than by convention:
    survives TP2-pair maintenance while staying rate-limited (rpm caps +
    `max_parallel_requests: 1`).
 
-Multi-model serving fails quietly: everything works until two workloads meet
-on one GPU. The 2026-08-31 postmortem is the incident that produced this
-structure; after the pin, a full background tick completes in ~35 s with zero
-interactive contention.
+The 2026-08-31 postmortem shows the failure mode this tier structure
+exists for: everything works until two workloads land on one GPU. After the
+pin, a full background tick completes in ~35 s with zero interactive
+contention.
 
 Other patterns worth lifting from the annotated config:
 
@@ -119,8 +119,8 @@ Readings that drove decisions:
 
 ## The postmortems
 
-Written from real incidents; kept here because the lessons generalise to any
-production ML deployment:
+Both happened on this node; I kept them here because the failure modes
+generalise to any production ML deployment:
 
 - **[Rollback destroyed the evidence](postmortems/2026-08-29-max-model-len-boot-failure.md)**:
   a 1M-context change failed to boot, the automatic rollback reverted and
@@ -134,7 +134,7 @@ production ML deployment:
   gateway, not hardware: interactive and background workloads must never
   share a serving pair.
 
-## Operating rules (earned, not aspirational)
+## Operating rules (all from incidents on this node)
 
 1. **Probe on a spare port first; cut over in one step.** Never mutate the
    healthy production path in place.
