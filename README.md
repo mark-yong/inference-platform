@@ -252,6 +252,39 @@ that workable:
   tracked from upstream recipe repos and community config notes, then
   verified on this node before adoption.
 
+### Deploying a model
+
+Model deployments run the same gate pattern, agent-executed end to end
+with human approval at the serving step. The loop, as actually run for
+the current GLM quant stack:
+
+1. **Track the recipe, pin everything.** Upstream recipe repo and producer
+   image tag are pinned; the base checkpoint revision is pinned; the
+   expected artifact is written down as a contract (shard count, tensor
+   count, exact byte total) before anything moves.
+2. **Verify remotely before downloading.** The HF manifest is checked
+   against the contract first; the 321-vs-642 GB storage-figure
+   discrepancy was resolved with a metadata query, zero bytes moved.
+3. **Gate on capacity, then download and verify.** Disk and GPU headroom
+   checks run before staging; after download, the index is checked
+   against the contract (tensor count, byte total), and produced output
+   is verified shard-by-shard SHA256 against the published manifest.
+   Byte-exact means the artifact *is* the published checkpoint; no
+   further quality proof is needed.
+4. **Preflight before the real run.** Quantization producers run with a
+   preflight-only flag first; investigations (like the KV-scale trace)
+   read the pinned image's code before touching a live path.
+5. **Serve on a spare port; cut over on approval.** New stacks come up
+   beside the healthy path and only take traffic after an explicit go;
+   superseded containers are held, not deleted, and image cleanup is a
+   separate deliberate pass.
+
+The same receipts discipline applies: deployment decisions cite verified
+artifacts (SHA256 manifests, disk checks, probe results), and two of the
+rules above (capture logs before revert, no unpinned routes) exist as
+rules because the incidents in the postmortems showed what happens
+without them.
+
 ## Credits
 
 The serving stack stands on open-source work from the local inference
