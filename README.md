@@ -162,7 +162,7 @@ The local-inference-lab Discord runs an active TP3 (three-GPU) effort for
 GLM-5.3-Flash; as of 2026-09-18 it works but stays behind TP2, which is why
 this node serves production on TP2:
 
-- boxtops4coochie's ported images
+- [BoxTops4Coochie](https://github.com/BoxTops4Coochie)'s ported images
   ([GLM5.3-Flash-TP3-Testing](https://github.com/BoxTops4Coochie/GLM5.3-Flash-TP3-Testing),
   r30/r34, latest 2026-09-16) boot with MTP3 or DFlash; decode ran
   165–180 tok/s c1 flat to 128k on LLM-bench. DCP1 reaches ~2M context,
