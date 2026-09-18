@@ -177,11 +177,7 @@ this node serves production on TP2:
   prefill 7,424 tok/s (32k) to 5,578 (512k), decode 75–85 tok/s,
   2.61M-token KV pool.
 - Quality is the open gap: LAVD consistency on TP3 attempts has not
-  reached TP2 parity (qu returned to TrellisMX pending a 28/30 NVFP4
-  result), and the honest community answer to "anyone successful AND
-  happy with TP3?" is optimism plus continued testing. One member runs
-  TP2 GLM + TP1 Qwen3.8-Flash-Next instead, pending the next DeepSeek
-  release.
+  reached TP2 parity.
 
 ## Incidents
 
