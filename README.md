@@ -146,6 +146,27 @@ generalise to any production ML deployment:
    floating tags and `*-stable` channels have both silently shipped old
    versions here.
 
+## Credits
+
+The serving stack stands on open-source work from the local inference
+community; the pieces this node actually runs:
+
+- **[local-inference-lab](https://github.com/local-inference-lab)** (Martin
+  Vit): the [llm-inference-bench](https://github.com/local-inference-lab/llm-inference-bench)
+  harness behind `benching/bench_matrix.py`.
+- **[b12x](https://github.com/local-inference-lab/b12x)** (by
+  [lukealonso](https://github.com/lukealonso), under the
+  local-inference-lab org): the NVFP4/FP8 kernel backend this
+  node's vLLM stacks run on (the DeepSeek production stack launches with
+  `BACKEND=b12x`).
+- **[ormandj](https://github.com/ormandj)** (David Orman): the
+  `sglang-glm53-flash-sm120` SGLang image the primary TP2 stack runs,
+  plus the quantisation recipes behind it.
+- **[NVIDIA Model Optimizer](https://github.com/NVIDIA/Model-Optimizer)**:
+  the NVFP4 quant of Qwen3.6-35B-A3B
+  ([nvidia/Qwen3.6-35B-A3B-NVFP4](https://huggingface.co/nvidia/Qwen3.6-35B-A3B-NVFP4))
+  that serves background traffic.
+
 ## Honest limitations
 
 - Single node, 3 GPUs; not a multi-node fabric study. P2P/NVLink bandwidth
