@@ -22,9 +22,10 @@ on its own GPU had ample headroom; it was a routing governance gap.
 1. Pinned six auxiliary task types (summarisation, title generation, memory
    flush, background review, extraction, triage) to the auxiliary model by
    name at the gateway, removing the fall-through path entirely.
-2. Established the standing rule: interactive and background workloads must
-   never share the same serving pair; routing policy enforces the tiering, not
-   good intentions.
+2. **Established the standing rule: background workloads must never reach
+   the interactive pair through an unpinned or default route. Any
+   deliberate cross-tier overflow must be explicit, bounded, and
+   independently rate-limited.**
 3. Verified: after the pin, a full auxiliary tick (17 fetches plus digests)
    completes in ~35s on the dedicated GPU with no interactive contention.
 

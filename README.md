@@ -28,6 +28,10 @@ serving/
                               HiCache, PCIe allreduce env
   compose.env.example         env templates, one file per service (keys
                               never in-file; vLLM reads VLLM_API_KEY)
+  sglang.env.example          env for the SGLang stack (image tag, port,
+                              model/cache paths, HiCache size)
+  adaptive.example.json       adaptive-MTP draft profile for the SGLang
+                              stack (per-concurrency candidate steps)
 benching/
   bench_matrix.py             concurrency × context-length matrix runner
                               (thin layer over llm-inference-bench)
@@ -116,8 +120,9 @@ bench from a single-operator host or bench through the gateway.
 
 Benchmark conditions (from the saved result files on the production node):
 
-- Harness: llm-inference-bench v0.4.29 @ `d115fee` (2026-09-01)
-- Output: 2,048 max tokens per request, 5 requests per concurrency slot
+- Harness: llm-inference-bench v0.4.32 @ `d115fee` (2026-09-01)
+- Output: 2,048 max tokens per request; sustained decode, 30 s per
+  matrix cell
 - Sampling: engine defaults (temperature/top_p not pinned)
 - Prompts: scout request populates the prefix cache, measured requests
   reuse the same prompt; figures measure sustained decode
@@ -128,7 +133,8 @@ Benchmark conditions (from the saved result files on the production node):
   131k cells cross-checked against the engines' Prometheus counters.
 - Engines: SGLang (ormandj `sglang-glm53-flash-sm120` v0.4.3),
   vLLM (Blackwell build with b12x kernels; aux tier on
-  `vllm/vllm-openai:nightly`)
+  `vllm/vllm-openai:nightly`). Run dates: DeepSeek 2026-08-28, aux 35B
+  2026-09-01, GLM 2026-09-02/03 (decode v0.4.29-file / prefill rerun).
 - Speculative decoding: GLM rows ran with adaptive MTP (EAGLE, adaptive
   draft profile [3,5]) on SGLang; the aux 35B ran without MTP (draft MoE
   unsupported on its vLLM build); the DeepSeek DSpark r19 config's spec
@@ -274,8 +280,8 @@ models. The loop, as actually run for the current GLM quant stack:
    checks run before staging; after download, the index is checked
    against the contract (tensor count, byte total), and produced output
    is verified shard-by-shard SHA256 against the published manifest.
-   Byte-exact means the artifact *is* the published checkpoint; no
-   further quality proof is needed.
+   Byte-exact establishes identity with the published checkpoint; no
+   separate equivalence validation is needed.
 4. **Preflight before the real run.** Quantization producers run with a
    preflight-only flag first; investigations (like the KV-scale trace)
    read the pinned image's code before touching a live path.

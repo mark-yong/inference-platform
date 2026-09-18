@@ -18,9 +18,12 @@ Reference numbers this matrix produced on 3x RTX PRO 6000 (96 GB) are in
 README.md "Benchmarks".
 
 Usage:
-  python3 bench_matrix.py --base-url http://serving-host:8000/v1 \
+  python3 bench_matrix.py --base-url http://serving-host:8000 \
       --model primary-chat --api-key-env VLLM_API_KEY_PRIMARY \
       --concurrency 1 2 4 --contexts 1024 32768 131072
+
+--base-url is the server ROOT (no /v1): upstream builds
+{base_url}/v1/chat/completions itself, so a /v1 suffix would double up.
 
 Environment:
   The API key is read from the env var named by --api-key-env, so the key
@@ -40,6 +43,7 @@ import time
 DEFAULT_CONC = [1, 2, 4]
 DEFAULT_CONTEXTS = [1024, 32768, 131072]
 DEFAULT_MAX_TOKENS = 2048  # per-request output cap used for the README tables
+DEFAULT_DURATION = 30  # seconds of sustained decode per matrix cell (explicit)
 # upstream harness repo cloned next to this script (or BENCH_REPO points at it)
 BENCH = os.environ.get("BENCH_REPO", "./llm-inference-bench")
 ENTRY = os.path.join(BENCH, "llm_decode_bench.py")
@@ -58,6 +62,7 @@ def run_cell(base_url, model, api_key, conc, ctx, max_tokens, outdir,
         "--concurrency", str(conc),
         "--contexts", str(ctx),
         "--max-tokens", str(max_tokens),
+        "--duration", str(DEFAULT_DURATION),
         "--output", out,
         "--display-mode", "plain",
         "--no-hw-monitor",
@@ -92,18 +97,15 @@ def run_cell(base_url, model, api_key, conc, ctx, max_tokens, outdir,
 def sustained_decode(result, conc, ctx):
     """Sustained-decode tok/s for one cell from upstream's summary_table.
 
-    summary_table maps context -> {concurrency: tok_s}. Keys are strings;
-    a run with --contexts 0 reports the no-context cell as "0".
+    summary_table maps context -> {concurrency: tok_s}. Keys are strings.
+    No heuristic fallback: each invocation is deliberately one
+    (concurrency, context) cell, so a missing key means the result file
+    does not match what was requested and must not be silently reinterpreted.
     """
     table = result.get("summary_table")
     if not isinstance(table, dict):
         return None
     row = table.get(str(ctx))
-    if not isinstance(row, dict):
-        for candidate in table.values():
-            if isinstance(candidate, dict) and str(conc) in candidate:
-                row = candidate
-                break
     if not isinstance(row, dict):
         return None
     value = row.get(str(conc))
@@ -113,7 +115,8 @@ def sustained_decode(result, conc, ctx):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--base-url", required=True,
-                    help="serving endpoint, e.g. http://serving-host:8000/v1")
+                    help="server ROOT url, e.g. http://serving-host:8000 "
+                         "(no /v1; upstream appends /v1/... itself)")
     ap.add_argument("--model", required=True)
     ap.add_argument("--api-key-env", default="BENCH_API_KEY",
                     help="name of the env var holding the API key")
@@ -168,7 +171,8 @@ def main():
                 line += f"{v:>11.0f}" if v is not None else f"{'-':>11}"
             print(line)
         print("(aggregate decode tok/s; c1 column is single-stream)")
-    sys.exit(0 if rows else 1)
+    expected = len(args.concurrency) * len(args.contexts)
+    sys.exit(0 if len(rows) == expected else 1)
 
 
 if __name__ == "__main__":

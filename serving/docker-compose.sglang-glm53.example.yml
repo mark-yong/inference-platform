@@ -115,7 +115,7 @@ services:
       - --sleep-on-idle
     shm_size: 64g
     env_file:
-      - .env
+      - ./sglang.env             # see sglang.env.example
     environment:
       PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
       # PCIe IPC allreduce: TP2 on a NUMA-node fabric without NVLink/P2P
@@ -135,7 +135,7 @@ services:
     volumes:
       - /models/glm53:/models/glm53:ro
       - ./cache:/root/.cache
-      - ./adaptive.json:/etc/glm53-adaptive/adaptive.json:ro
+      - ./adaptive.example.json:/etc/glm53-adaptive/adaptive.json:ro
     devices:
       - nvidia.com/gpu=0
       - nvidia.com/gpu=1
