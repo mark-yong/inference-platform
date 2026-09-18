@@ -138,9 +138,13 @@ Prefill throughput (prompt tok/s, same runs, client-measured TTFT):
 
 | Model · engine | 8k | 16k | 32k | 64k | 131k |
 |---|---:|---:|---:|---:|---:|
-| GLM-5.3-Flash · TP2 SGLang | 4,941 | 6,013 | 3,678 | 4,255 | 6,229 |
+| GLM-5.3-Flash · TP2 SGLang | 5,232 | 5,782 | 5,705 | 5,542 | 5,912 |
 | DeepSeek-V4-Flash · TP2 vLLM | 5,734 | 5,582 | 6,363 | 6,793 | 6,583 |
 | Qwen3.6-35B-A3B NVFP4 · 1 GPU vLLM | 22,553 | 20,767 | 17,514 | 13,859 | 9,432 |
+
+The GLM prefill row is from the 2026-09-03 rerun (server-validated each
+cell): the 09-02 scan showed a 32k/64k dip (3.7k/4.3k) that did not repeat
+in either rerun, so it is treated as sample noise from concurrent load.
 
 Readings that drove decisions:
 
@@ -154,9 +158,9 @@ Readings that drove decisions:
   third GPU during the validation runs.
 - Prefill differs sharply by tier: the 1-GPU 35B NVFP4 prefills at
   22.5k tok/s short-context (3-4x either TP2 pair) and still clears
-  9.4k at 131k; both TP2 pairs hold a roughly flat ~3.7-6.8k across the
+  9.4k at 131k; both TP2 pairs hold roughly flat ~5.2-6.8k across the
   whole range.
-- Prefill cross-checked server-side: 6.2k tok/s client-measured vs 6.5k on
+- Prefill cross-checked server-side: 5.9k tok/s client-measured vs 6.2k on
   the engine's own Prometheus counters (83.5k-token prompt, <5% gap).
 
 ## The postmortems
