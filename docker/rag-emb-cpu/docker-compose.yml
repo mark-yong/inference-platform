@@ -1,0 +1,22 @@
+services:
+  rag-emb-cpu:
+    # Same runtime image family as the GPU serving stack; this container uses
+    # CPU only (no GPU devices requested). Tag-pinned for reproducibility.
+    image: vllm/vllm-openai:v0.28.0
+    container_name: rag-emb-cpu
+    restart: unless-stopped
+    entrypoint: ["python3", "/srv/emb_cpu_server_torch.py"]
+    environment:
+      - MODEL_DIR=/model
+      - PORT=8017
+      - TORCH_THREADS=4
+    ports:
+      - "8017:8017"
+    volumes:
+      # HF hub cache layout: <dir>/snapshots/<hash>/... (the server resolves
+      # the snapshot path itself); must contain model weights + tokenizer.json
+      - ${RAG_EMB_WEIGHTS_DIR:-/models/rag-emb/hf-weights}:/model:ro
+      # Server source, mounted read-only (no build step)
+      - ${RAG_EMB_SRC_DIR:-.}:/srv:ro
+    mem_limit: 8g
+    cpus: 4

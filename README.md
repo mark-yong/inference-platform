@@ -4,18 +4,26 @@ This repo contains the sanitised configs from my inference server. It runs
 3× RTX PRO 6000 (96 GB each) on an EPYC host under Proxmox, with LiteLLM in
 front of vLLM, SGLang and llama.cpp, ~15 containers, four open-weight model
 families, and every call served locally, with no third-party LLM API in the
-serving path.
+serving path. A cloud burst tier (NVIDIA Nemotron on Nebius Token Factory)
+exists for failover and overflow only: it is reachable solely through router
+fallback chains, and normal operation sends it zero traffic.
 
 The examples include the routing config, representative serving stacks, the
-benchmark wrapper I use for capacity tests, and two incident notes that led
-to changes in the current setup. Hosts are parameterised, secrets live in
-env files, and model names are genericised in the example configs.
+CPU embedding sidecar that keeps vector queries off the GPUs, the benchmark
+wrapper I use for capacity tests, the production benchmark receipts, and two
+incident notes that led to changes in the current setup. Hosts are
+parameterised, secrets live in env files, and model names are genericised in
+the example configs.
 
 ## Contents
 
 ```
-gateway/config.example.yaml   LiteLLM routing: tiers, per-task pins, weighted
-                              background group (DB-less mode)
+gateway/
+  config.example.yaml         LiteLLM routing: tiers, per-task pins, weighted
+                              background group, embeddings lanes, burst tier
+                              (DB-less mode)
+  token_factory_check.py      burst-tier smoke check (stdlib only; reads model
+                              slugs from the endpoint at run time)
 serving/
   docker-compose.example.yml  vLLM stacks: TP2 primary + single-GPU aux
   docker-compose.sglang-glm53.example.yml
@@ -24,9 +32,20 @@ serving/
   compose.env.aux.example     env for the aux-35b service
   sglang.env.example          env for the SGLang stack
   adaptive.example.json       adaptive-MTP draft profile
+docker/
+  rag-emb-cpu/                CPU embedding sidecar: compose + server source
+                              (Qwen3-Embedding-0.6B, last-token pooling,
+                              left padding; cosine 0.99994 vs the GPU lane)
 benching/
   bench_matrix.py             concurrency × context matrix runner over
                               llm-inference-bench
+  results/                    production benchmark receipts (sanitised server
+                              fields) + generated summary tables
+design-decisions/
+  001-two-lane-embeddings.md  GPU ingest / CPU query split and the vector
+                              contract between the lanes
+  002-cloud-burst-tier.md     why the cloud lane is fallbacks-and-pins only
+  003-agent-memory-layers.md  episodic / semantic / procedural memory design
 postmortems/
   2026-08-29-*.md             rollback removed boot logs before diagnosis
   2026-08-31-*.md             unpinned background route stalled a session
@@ -44,6 +63,12 @@ Three tiers in the gateway config:
    capped TP2 member (weight 1, `rpm: 4`, `max_parallel_requests: 1`).
    Weight sets selection probability; the caps are what bound the impact on
    interactive traffic. Remove the TP2 member for strict isolation.
+4. Burst: NVIDIA Nemotron on Nebius Token Factory via `burst-nemotron`,
+   reachable only through router fallbacks (`primary-chat`,
+   `primary-chat-nothink`, `background-llm`). Fail fast (`allowed_fails: 1`)
+   plus a 45 s cooldown keeps consumers working through a GPU stack swap;
+   the fallback chain is what makes this a burst tier rather than a shadow
+   primary. See design-decisions/002-cloud-burst-tier.md.
 
 On 2026-08-31 an unpinned background compaction job followed the default
 route onto the TP2 pair and stalled a live session for about 10 minutes
@@ -87,6 +112,25 @@ Other configuration details:
   concurrent request (state + MTP intermediates). The host-RAM HiCache tier
   is sized explicitly (32 GB).
 
+## Embeddings
+
+Vector embedding runs as two lanes with one contract
+(design-decisions/001-two-lane-embeddings.md):
+
+- Ingest lane: vLLM serving Qwen3-Embedding-0.6B (1024-d) on the GPU,
+  started on demand for batch ingestion and stopped afterwards (~1.1 GiB
+  VRAM freed between runs). Never takes query traffic.
+- Query lane: an always-on torch CPU sidecar (`docker/rag-emb-cpu/`), capped
+  at 4 threads and 8 GB, OpenAI-compatible on :8017. Interactive retrieval
+  never queues behind an ingest batch, and the GPU is free between runs.
+
+The contract: raw text input, LEFT padding, last-token pooling at position
+-1, L2-normalised FP32 output. Cosine 0.99994 against the GPU lane for
+identical input, with a standing >= 0.99 swap gate before any embedder
+cutover. The first CPU implementation used mean pooling with right padding:
+the vectors were the right shape and quietly wrong. The contract exists
+because of that failure.
+
 ## Benchmark setup
 
 `benching/bench_matrix.py` drives a concurrency × context-length matrix
@@ -127,6 +171,15 @@ Benchmark conditions (from the saved result files on the production node):
 - Interconnect: PCIe 4.0 x16 on every GPU link, NODE topology, no
   NVLink/P2P (TP2 traffic crosses the root complex)
 - GPUs: TP2 pair = 325 W Max-Q cards; aux = one 600 W card
+
+Result receipt files are tracked in `benching/results/` (server fields
+rewritten to the parameterised host name; no other field modified), with
+generated summary tables in `benching/results/summary-tables.md`. The
+receipts carry both GLM runs: the decode table below reads the 2026-09-02
+file (v0.4.29 harness), and a 2026-09-03 rerun on the v0.4.34 harness
+measured higher single-stream decode (167.9 to 180.3 across contexts, 131k
+at 167.9); both receipts are kept, and the rerun is the current expectation
+for this stack.
 
 Decode results (aggregate tok/s):
 
@@ -190,6 +243,10 @@ Two incidents led to changes in the current setup.
   capacity throughout. Six task types are now pinned by name, and the
   standing rule distinguishes unpinned routes from bounded, explicit
   overflow.
+
+The routing-tier and burst-tier designs behind these fixes are written up
+in `design-decisions/`; `003-agent-memory-layers.md` documents the memory
+architecture that sits above the serving layers.
 
 ## Operating rules
 

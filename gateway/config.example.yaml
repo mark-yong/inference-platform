@@ -174,12 +174,68 @@ model_list:
       routing_strategy: latency-based-routing
       allowed_fallbacks: []
 
+  # ---- embeddings: two-lane design (GPU ingest, CPU query) ----
+  # INGEST lane: vLLM on the GPU, started on demand for batch ingestion and
+  # stopped after (~1.1 GiB VRAM freed between runs). Never takes query traffic.
+  - model_name: emb-ingest
+    litellm_params:
+      model: openai/Qwen3-Embedding-0.6B
+      api_base: http://serving-host:8016/v1
+      api_key: ""
+      request_timeout: 300
+      max_retries: 1
+    router_params:
+      routing_strategy: simple-shuffle
+      allowed_fallbacks: []
+
+  # QUERY lane: always-on torch CPU sidecar (docker/rag-emb-cpu/), capped at
+  # 4 threads / 8 GB. Contract: identical vectors to the GPU lane for
+  # identical input (cosine 0.99994 verified; >= 0.99 swap gate before any
+  # cutover). See design-decisions/001-two-lane-embeddings.md.
+  - model_name: emb-query
+    litellm_params:
+      model: openai/qwen3-emb-0.6b-cpu
+      api_base: http://embeddings-host:8017/v1
+      api_key: ""
+      request_timeout: 30
+      max_retries: 1
+    router_params:
+      routing_strategy: simple-shuffle
+      allowed_fallbacks: []
+
+  # ---- cloud burst tier: NVIDIA Nemotron on Nebius Token Factory ----
+  # Reached ONLY via the fallback chains in router_settings. Normal
+  # operation = zero cloud traffic. Generic role-named alias: the backing
+  # slug can move (Nano -> Super -> a newer release) without consumer
+  # renames. The gate script (gateway/token_factory_check.py) reads model
+  # slugs from the endpoint at run time, never hard-coded.
+  - model_name: burst-nemotron
+    litellm_params:
+      model: nebius/nvidia/nemotron-3-nano
+      api_key: os.environ/NEBIUS_API_KEY
+      request_timeout: 300
+      max_retries: 1
+      additional_drop_params: ["min_p", "logit_bias"]
+    model_info:
+      max_input_tokens: 256000
+
 # ---- logical aliases (router_settings, NOT top-level; v1.99+ reads it
 #      only under router_settings; top-level is silently unread) ----
 router_settings:
   model_group_alias:
     fast-chat: aux-35b            # cheap lane for callers that just need "a model"
     deep-chat: primary-chat
+  # fail fast into fallbacks; a dead backend (GPU stack swap) cools down briefly
+  num_retries: 1
+  allowed_fails: 1
+  cooldown_time: 45
+  # burst chains: local aliases stay primary; the cloud deployment fires only
+  # on failure or cooldown. Normal operation = zero cloud traffic, and any
+  # burst-tier hit is visible in tracing as an anomaly worth a look.
+  fallbacks:
+    - primary-chat: [burst-nemotron]
+    - primary-chat-nothink: [burst-nemotron]
+    - background-llm: [burst-nemotron]
 
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
