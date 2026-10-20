@@ -49,3 +49,21 @@ Wire a **burst tier** with three properties:
 The distinction that matters is structural: fallbacks/pins only, never a
 shared-weight deployment. A cloud deployment with weight > 0 in a latency
 routing group IS a primary, whatever the README says.
+
+## Live receipts (2026-10-20)
+
+- Key staged: `NEBIUS_API_KEY` in `/opt/stacks/litellm-proxy/.env` on 114
+  (litellm service `env_file`), verified in the container env.
+- Smoke check (`gateway/token_factory_check.py`, direct to Token Factory):
+  28 models, 5 Nemotron; probed `nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B`,
+  1.02 s, reply "ok".
+- Gateway wiring: `model_name: burst-nemotron` added to the production
+  `config.yaml` (litellm v1.104.0), `api_key: os.environ/NEBIUS_API_KEY`.
+  Fallback/pin only — no consumer routes to it; the zero-hit invariant is
+  intact. Recreated with `--no-deps` (full-stack recreate hits a postgres
+  endpoint race).
+- First runtime call through the gateway: POST `:4000/v1/chat/completions`,
+  model `burst-nemotron` → content "ok", reasoning present, 81 total tokens.
+- Backing slug behind the alias: `nebius/nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B`.
+- Ops gotcha: the stack `.env` is hand-edited with `micro`; saving a stale
+  editor buffer silently reverts appended lines — grep-verify after edits.
