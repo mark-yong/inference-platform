@@ -44,18 +44,18 @@ Wire a **burst tier** with three properties:
   chain (or an explicit pin) ever leave the LAN, and the config makes that
   boundary auditable in one file.
 
-## Update: the burst tier converged on the locally served checkpoint
+## Burst target
 
 The original wiring defaulted to Nemotron Nano because it was the cheapest way to
-prove the chain. Once the same family was serving locally on flare, routing burst
-to an *earlier* size made comparisons between lanes meaningless — two models, two
-answers, no way to say whether a difference came from the engine or the weights.
+prove the chain. Once the same family was serving locally on flare, a burst to an
+earlier size gave two models and two answers, so a difference between the lanes
+could have come from the engine or from the weights.
 
-So the default burst target became the checkpoint this node serves itself:
-`burst-nemotron-lightning` on `nvidia/Nemotron-3_5-Lightning`. Property 3 (a
-role-named alias, slug never hard-coded) is what made the change a one-line edit
-with no consumer touched. Nano stays routable for the fast lane, and the larger
-Nemotron sizes stay available on the same key for work that wants them.
+The default burst target is now the checkpoint this node serves itself:
+`burst-nemotron-lightning` on `nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4`.
+Property 3 is what made it a one-line change with no consumer touched. Nano stays
+routable for the fast lane, and the larger Nemotron sizes stay available on the
+same key for work that wants them.
 
 ## Notes for reusers
 

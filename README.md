@@ -1,88 +1,71 @@
 # inference-platform
 
-A personal AI on my own hardware — with an elastic cloud lane on the same open
-weights. This repo is the sanitised reference for how it is wired: gateway
-routing, serving stacks, the burst tier, benchmark receipts, incident notes and
-the design decisions behind them.
+Sanitised configs from my inference server. It runs 3× RTX PRO 6000 (96 GB each)
+on an EPYC host under Proxmox, with LiteLLM in front of vLLM, SGLang and
+llama.cpp, about 15 containers and four open-weight model families. Every
+steady-state call is served locally, with no third-party LLM API in the serving
+path. The cloud burst tier (NVIDIA Nemotron on Nebius Token Factory) exists for
+failover and overflow: it is reachable only through router fallbacks, and normal
+operation sends it zero traffic.
 
-**What runs here.** Three RTX PRO 6000 cards (96 GB each) under Proxmox serve
-every steady-state call on open weights: vLLM and SGLang for tensor-parallel
-work, a captured-graph engine (flare) for a Nemotron package, and LiteLLM in
-front of all of it exposing role-named aliases (`main`, `fast`, `vision`,
-`burst`) instead of model slugs, so the size behind a role can change without a
-client edit. A lane resolver keeps those roles pointing at live backends.
+LiteLLM exposes role names (`main`, `fast`) instead of model slugs, so the model
+behind a role can change without a client edit; a resolver rewrites those names
+from live backend probes.
 
-**Why the burst tier exists.** Local serving has to be sized; a cloud endpoint
-does not. The burst lane carries overflow and failover at zero idle cost — and it
-serves the *same checkpoint* as the local lane, so bursting is a change of
-location rather than a change of model.
-
-## What runs
+## What runs where
 
 | Role | Model | Where |
 |---|---|---|
-| `main` / `fast` | DeepSeek-V4.1-Flash (TP3), Qwen3.8-Flash-Next (TP1, flare), GLM-5.3-Flash (TP2) | local GPUs |
-| `vision` | a vision-capable lane with an independent fallback | local GPUs |
-| `burst` | NVIDIA Nemotron-3.5-Lightning — the same checkpoint as the local flare lane | Nebius Token Factory |
-| memory | CPU embedding sidecar, long-term fact bank, RDF/SPARQL graph | local |
+| main, fast | DeepSeek-V4.1-Flash, GLM-5.3-Flash, Qwen3.8-Flash-Next | local GPUs |
+| burst | NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4, the checkpoint the local flare lane also serves | Nebius Token Factory |
+| memory | CPU embedding sidecar, Qdrant corpus, SPARQL graph | local |
 
-## NVIDIA open-source models used
+The burst target is the checkpoint this node serves itself, so a local answer and
+a burst answer differ by one model name in the request. The reasoning is in
+`design-decisions/002-cloud-burst-tier.md`.
 
-- **NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4** — served locally from a signed
-  flare package (weights, compiled kernels, captured CUDA graphs) built with a
-  recipe written for this checkpoint family, and served unchanged on Nebius Token
-  Factory as the burst tier. Qualified against a reference serving of the same
-  checkpoint: primary answers agree on 40/40 comparison prompts, deterministic
-  across repeated runs, 30/30 requests clean.
-- **NVIDIA Nemotron-3-Nano-30B-A3B** — the original burst default, still routable.
-- **NVIDIA Nemotron-3-Ultra-550B-A55B** — long-context consolidation step,
-  reachable on the same key.
-- **NVIDIA Model Optimizer** — the NVFP4 quant of Qwen3.6-35B-A3B that serves
+## NVIDIA open models
+
+- **NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4** @ `1de6d84f`, served locally
+  from a flare package built with a recipe for this checkpoint, and served
+  unchanged on Token Factory as the burst lane. Against a reference serving of
+  the same checkpoint it agreed on all 40 comparison prompts; 30/30 requests
+  completed clean, and repeats were deterministic.
+- Nemotron-3-Nano-30B-A3B, the earlier burst default, still routable.
+- Nemotron-3-Ultra-550B-A55B, reachable on the same key, used for long-context
+  consolidation.
+- NVIDIA Model Optimizer made the NVFP4 quant of Qwen3.6-35B-A3B that serves
   background traffic (credited below).
 
-## Where Nebius Token Factory helped
+## Token Factory
 
-The burst tier is one OpenAI-compatible block in the gateway config. That is the
-whole integration: one base URL and one key gave every client in the stack an
-elastic lane with no second SDK, no second model family and no second set of
-prompts. Concretely:
+One `model_list` block in the gateway config, one env var for the key. Every
+client in the stack reaches the burst lane through the same OpenAI-compatible
+endpoint, with no second SDK and no separate prompt set.
 
-- **Capacity without planning.** Local serving must be sized; Token Factory must
-  not. Overflow and failover cost nothing while idle.
-- **Same weights, different location.** Token Factory serves the same Nemotron
-  checkpoint this node runs on flare, so a burst differs from a local call by one
-  model name.
-- **Receipts, not adjectives.** `gateway/token_factory_check.py` enumerates the
-  endpoint's models at run time (no hard-coded slug) and returns latency and token
-  usage for its smoke call; those numbers land in the benchmark receipts.
+Local serving has to cover the peak and the provider does not, so failover during
+a GPU pair reload and overflow on a busy night cost nothing while idle. Because
+the burst target is the same checkpoint as the local lane, a local answer and a
+cloud answer can be compared directly instead of across two different models.
+`gateway/token_factory_check.py` reads the model list from the endpoint at run
+time, with no slug of its own, and reports latency and token usage for its smoke
+call; those numbers are in `benching/results/`.
 
 ## Quickstart
 
 ```bash
 git clone https://github.com/mark-yong/inference-platform && cd inference-platform
-cp gateway/config.example.yaml gateway/config.yaml    # roles, tiers, burst tier
-export NEBIUS_API_KEY=...                             # only for the burst lane
-python gateway/token_factory_check.py                 # lists models, one smoke call
-# serving stacks: serving/docker-compose.example.yml + per-service env templates
+cp gateway/config.example.yaml gateway/config.yaml   # roles, tiers, burst lane
+export NEBIUS_API_KEY=...                            # burst lane only
+python gateway/token_factory_check.py                # lists models, one smoke call
+# serving stacks: serving/docker-compose.example.yml and the env templates beside it
 ```
 
-Every address in the examples is a variable; nothing points at a private host.
+Addresses in the examples are variables; secrets come from env files.
 
 ---
 
 ## Operating notes
-
-The rest of this document is the operating record: routing behaviour, serving
-configuration, benchmark results, incident write-ups and the rules that came out
-of them.
-
-This repo contains the sanitised configs from my inference server. It runs
-3× RTX PRO 6000 (96 GB each) on an EPYC host under Proxmox, with LiteLLM in
-front of vLLM, SGLang and llama.cpp, ~15 containers, four open-weight model
-families, and every call served locally, with no third-party LLM API in the
-serving path. A cloud burst tier (NVIDIA Nemotron on Nebius Token Factory)
-exists for failover and overflow only: it is reachable solely through router
-fallback chains, and normal operation sends it zero traffic.
 
 The examples include the routing config, representative serving stacks, the
 CPU embedding sidecar that keeps vector queries off the GPUs, the benchmark
@@ -140,8 +123,8 @@ Three tiers in the gateway config:
    Weight sets selection probability; the caps are what bound the impact on
    interactive traffic. Remove the TP2 member for strict isolation.
 4. Burst: NVIDIA Nemotron on Nebius Token Factory via `burst-nemotron-lightning`
-   (the same checkpoint the local flare lane serves — bursting changes location,
-   not model) and `burst-nemotron` (Nano) for the fast lane,
+   (the same checkpoint the local flare lane serves) and `burst-nemotron` (Nano)
+   for the fast lane,
    reachable only through router fallbacks (`primary-chat`,
    `primary-chat-nothink`, `background-llm`). Fail fast (`allowed_fails: 1`)
    plus a 45 s cooldown keeps consumers working through a GPU stack swap;

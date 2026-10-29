@@ -221,9 +221,8 @@ model_list:
 
   # Same checkpoint as the local flare lane, served by the provider. Used for the
   # local-vs-cloud comparison (two identical requests, one model name apart) and
-  # available to any chain that wants cloud capacity without changing model. Kept
-  # out of the default fallback chains so bursting stays a location change, not a
-  # silent model change, unless a chain opts in by name.
+  # available to any chain that wants cloud capacity at the same weights. Left out
+  # of the default fallback chains: a chain that wants it opts in by name.
   - model_name: burst-nemotron-lightning
     litellm_params:
       model: nebius/nvidia/Nemotron-3_5-Lightning
