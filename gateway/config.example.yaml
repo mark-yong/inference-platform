@@ -219,6 +219,22 @@ model_list:
     model_info:
       max_input_tokens: 256000
 
+  # Same checkpoint as the local flare lane, served by the provider. Used for the
+  # local-vs-cloud comparison (two identical requests, one model name apart) and
+  # available to any chain that wants cloud capacity without changing model. Kept
+  # out of the default fallback chains so bursting stays a location change, not a
+  # silent model change, unless a chain opts in by name.
+  - model_name: burst-nemotron-lightning
+    litellm_params:
+      model: nebius/nvidia/Nemotron-3_5-Lightning
+      api_key: os.environ/NEBIUS_API_KEY
+      request_timeout: 300
+      max_retries: 1
+      additional_drop_params: ["min_p", "logit_bias"]
+    # No model_info.max_input_tokens: /v1/models publishes only id, created and
+    # owned_by for this endpoint, so a context limit written here would be a
+    # guess. Request sizing stays out of band until the field exists upstream.
+
 # ---- logical aliases (router_settings, NOT top-level; v1.99+ reads it
 #      only under router_settings; top-level is silently unread) ----
 router_settings:
