@@ -71,6 +71,9 @@ landed in-tree, and eleven defect reports filed with nine resolved:
 - `#83` The checkpoint licence travels with a package through promotion.
 - `#94` Reasoning delimiters count only when generated as that token.
 
+New models for this stack are being packaged for flare rather than brought up on
+another engine, and the next flare release is expected soon.
+
 ## Quickstart
 
 ```bash
