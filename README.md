@@ -34,6 +34,12 @@ a burst answer differ by one model name in the request. The reasoning is in
 - Nemotron-3-Nano-30B-A3B, the earlier burst default, still routable.
 - Nemotron-3-Ultra-550B-A55B, reachable on the same key, used for long-context
   consolidation.
+- **nvidia/Qwen3.8-Flash-Next-FP4-Local** @ `b9ce18a6`, served on flare as
+  `m-yong/Qwen3.8-Flash-Next-FLARE` (c32, MTP5). Three of the fixes listed under
+  Upstream work exist because of lanes like this one: `#31` keeps ChatML
+  tool-argument numbers as literals, `#67` leaves a quoted `<tool_call>` in prose
+  instead of starting a call (validated against Qwen3.8 Flash and 27B), and `#94`
+  matches reasoning delimiters as tokens so a mention is not a channel switch.
 - NVIDIA Model Optimizer made the NVFP4 quant of Qwen3.6-35B-A3B that serves
   background traffic (credited below).
 
@@ -50,6 +56,20 @@ cloud answer can be compared directly instead of across two different models.
 `gateway/token_factory_check.py` reads the model list from the endpoint at run
 time, with no slug of its own, and reports latency and token usage for its smoke
 call; those numbers are in `benching/results/`.
+
+## Upstream work
+
+Seven pull requests merged into NVIDIA's serving repository, two design documents
+landed in-tree, and eleven defect reports filed with nine resolved:
+
+- `#31` ChatML tool arguments keep JSON number literals instead of emitting every
+  number as a float.
+- `#49` Undeclared MiniMax tool calls are returned under automatic tool choice.
+- `#56` Gemma 4 chat templates load in Helios.
+- `#62` Gemma 4 reasoning channels and tool calls parse correctly.
+- `#67` A tool tag quoted in prose stays text instead of aborting the response.
+- `#83` The checkpoint licence travels with a package through promotion.
+- `#94` Reasoning delimiters count only when generated as that token.
 
 ## Quickstart
 
