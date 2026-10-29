@@ -17,7 +17,7 @@ from live backend probes.
 | Role | Model | Where |
 |---|---|---|
 | main, fast | DeepSeek-V4.1-Flash (TP3), GLM-5.3-Flash (TP2), Qwen3.8-Flash-Next (TP1) | local GPUs |
-| burst | NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4, the checkpoint the local flare lane also serves | Nebius Token Factory |
+| burst | NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4, the checkpoint the local Flare lane also serves | Nebius Token Factory |
 | memory | CPU embedding sidecar, Qdrant corpus, SPARQL graph | local |
 
 The burst target is the checkpoint this node serves itself, so a local answer and
@@ -27,14 +27,14 @@ a burst answer differ by one model name in the request. The reasoning is in
 ## NVIDIA open models
 
 - **NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4** @ `1de6d84f`, served locally
-  from a flare package built with a recipe for this checkpoint, and served
+  from a Flare package built with a recipe for this checkpoint, and served
   unchanged on Token Factory as the burst lane. Against a reference serving of
   the same checkpoint it agreed on all 40 comparison prompts; 30/30 requests
   completed clean, and repeats were deterministic.
 - Nemotron-3-Nano-30B-A3B, the earlier burst default, still routable.
 - Nemotron-3-Ultra-550B-A55B, reachable on the same key, used for long-context
   consolidation.
-- **nvidia/Qwen3.8-Flash-Next-FP4-Local** @ `b9ce18a6`, served on flare as
+- **nvidia/Qwen3.8-Flash-Next-FP4-Local** @ `b9ce18a6`, served on Flare as
   `m-yong/Qwen3.8-Flash-Next-FLARE` (c32, MTP5). Three of the fixes listed under
   Upstream work exist because of lanes like this one: `#31` keeps ChatML
   tool-argument numbers as literals, `#67` leaves a quoted `<tool_call>` in prose
@@ -73,9 +73,9 @@ landed in-tree, and eleven defect reports filed with nine resolved:
 
 ## Next
 
-New models for this stack are being packaged for flare rather than brought up on
-another engine, and the next flare release is expected soon. GLM-5.3-Flash is the
-one I am waiting on. It does not serve on flare yet, because the export runs out of
+New models for this stack are being packaged for Flare rather than brought up on
+another engine, and the next Flare release is expected soon. GLM-5.3-Flash is the
+one I am waiting on. It does not serve on Flare yet, because the export runs out of
 memory during kernel tuning on 27 Oct, the same failure reported upstream in `#73`,
 so that lane stays on SGLang at TP2 until a release covers it.
 
@@ -153,7 +153,7 @@ Three tiers in the gateway config:
    are what bound the impact on interactive traffic. Remove the primary
    member for strict isolation.
 4. Burst: NVIDIA Nemotron on Nebius Token Factory, as `burst-nemotron-lightning`
-   (the checkpoint the local flare lane also serves) and `burst-nemotron` (Nano)
+   (the checkpoint the local Flare lane also serves) and `burst-nemotron` (Nano)
    for the fast lane. Reachable only through router fallbacks (`primary-chat`,
    `primary-chat-nothink`, `background-llm`). Fail fast (`allowed_fails: 1`)
    plus a 45 s cooldown keeps consumers working through a GPU stack swap; the

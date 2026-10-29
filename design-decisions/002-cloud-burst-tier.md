@@ -47,7 +47,7 @@ Wire a **burst tier** with three properties:
 ## Burst target
 
 The original wiring defaulted to Nemotron Nano because it was the cheapest way to
-prove the chain. Once the same family was serving locally on flare, a burst to an
+prove the chain. Once the same family was serving locally on Flare, a burst to an
 earlier size gave two models and two answers, so a difference between the lanes
 could have come from the engine or from the weights.
 
