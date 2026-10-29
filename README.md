@@ -16,7 +16,7 @@ from live backend probes.
 
 | Role | Model | Where |
 |---|---|---|
-| main, fast | DeepSeek-V4.1-Flash, GLM-5.3-Flash, Qwen3.8-Flash-Next | local GPUs |
+| main, fast | DeepSeek-V4.1-Flash (TP3), GLM-5.3-Flash (TP2), Qwen3.8-Flash-Next (TP1) | local GPUs |
 | burst | NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4, the checkpoint the local flare lane also serves | Nebius Token Factory |
 | memory | CPU embedding sidecar, Qdrant corpus, SPARQL graph | local |
 
@@ -84,7 +84,7 @@ gateway/
   token_factory_check.py      burst-tier smoke check (stdlib only; reads model
                               slugs from the endpoint at run time)
 serving/
-  docker-compose.example.yml  vLLM stacks: TP2 primary + single-GPU aux
+  docker-compose.example.yml  vLLM stacks: TP3 primary + single-GPU aux
   docker-compose.sglang-glm53.example.yml
                               SGLang TP2 stack (GLM-5.3/MTP class)
   compose.env.example         env templates, one per service
@@ -114,26 +114,27 @@ postmortems/
 
 Three tiers in the gateway config:
 
-1. Interactive: the primary chat model on a dedicated TP2 GPU pair.
+1. Interactive: the primary chat model, DeepSeek-V4.1-Flash, across all three
+   GPUs (TP3).
 2. Auxiliary: Qwen3.6-35B-A3B on its own GPU. Every background task type
    (summarisation, titling, extraction, triage) has a named pin to this
    tier; no route falls through to the primary pair.
 3. Background: a weighted group, weight 10 on the auxiliary GPU plus a
-   capped TP2 member (weight 1, `rpm: 4`, `max_parallel_requests: 1`).
-   Weight sets selection probability; the caps are what bound the impact on
-   interactive traffic. Remove the TP2 member for strict isolation.
-4. Burst: NVIDIA Nemotron on Nebius Token Factory via `burst-nemotron-lightning`
-   (the same checkpoint the local flare lane serves) and `burst-nemotron` (Nano)
-   for the fast lane,
-   reachable only through router fallbacks (`primary-chat`,
+   capped member of the primary set (weight 1, `rpm: 4`,
+   `max_parallel_requests: 1`). Weight sets selection probability; the caps
+   are what bound the impact on interactive traffic. Remove the primary
+   member for strict isolation.
+4. Burst: NVIDIA Nemotron on Nebius Token Factory, as `burst-nemotron-lightning`
+   (the checkpoint the local flare lane also serves) and `burst-nemotron` (Nano)
+   for the fast lane. Reachable only through router fallbacks (`primary-chat`,
    `primary-chat-nothink`, `background-llm`). Fail fast (`allowed_fails: 1`)
-   plus a 45 s cooldown keeps consumers working through a GPU stack swap;
-   the fallback chain is what makes this a burst tier rather than a shadow
-   primary. See design-decisions/002-cloud-burst-tier.md.
+   plus a 45 s cooldown keeps consumers working through a GPU stack swap; the
+   fallback chain is what makes this a burst tier and keeps it from becoming a
+   shadow primary. See design-decisions/002-cloud-burst-tier.md.
 
 On 2026-08-31 an unpinned background compaction job followed the default
-route onto the TP2 pair and stalled a live session for about 10 minutes
-while the auxiliary GPU sat idle. After the task-type pins were added, a
+route onto the interactive set (a TP2 pair at the time) and stalled a live
+session for about 10 minutes while the auxiliary GPU sat idle. After the task-type pins were added, a
 full background tick completed in ~35 s with no observed contention. See
 Incidents.
 
@@ -230,8 +231,9 @@ Benchmark conditions (from the saved result files on the production node):
   unsupported on its vLLM build); the DeepSeek DSpark r19 config's spec
   state at bench time is not recorded in the result file
 - Interconnect: PCIe 4.0 x16 on every GPU link, NODE topology, no
-  NVLink/P2P (TP2 traffic crosses the root complex)
-- GPUs: TP2 pair = 325 W Max-Q cards; aux = one 600 W card
+  NVLink/P2P, so tensor-parallel traffic crosses the root complex
+- GPUs: 3× RTX PRO 6000, 97,887 MiB each; power limits read from `nvidia-smi`
+  are 300 W on the two Max-Q cards (index 0 and 1) and 350 W on index 2
 
 Result receipt files are tracked in `benching/results/` (server fields
 rewritten to the parameterised host name; no other field modified), with
@@ -258,23 +260,34 @@ Prefill throughput (prompt tok/s, same runs, client-measured TTFT):
 | DeepSeek-V4-Flash · TP2 vLLM | 5,734 | 5,582 | 6,363 | 6,793 | 6,583 |
 | Qwen3.6-35B-A3B NVFP4 · 1 GPU vLLM | 22,553 | 20,767 | 17,514 | 13,859 | 9,432 |
 
+These tables are the 2026-09 receipts and are kept as measured. The DeepSeek
+row is DeepSeek-V4-Flash on a TP2 pair, which was the primary configuration at
+the time; the primary model is now DeepSeek-V4.1-Flash on three GPUs, and no
+benchmark receipt for that stack is published yet.
+
 The GLM prefill row is from the 2026-09-03 rerun, server-validated on each
 cell. The 09-02 scan showed a 32k/64k dip (3.7k/4.3k) that did not repeat in
 either rerun; treated as sample noise from concurrent load.
 
 Qwen3.6-35B-A3B had the highest c4 throughput in this test, so background
-traffic runs there and the TP2 pair is reserved for interactive traffic.
+traffic runs there and the primary set is reserved for interactive traffic.
 GLM-5.3-Flash c1 decode changed from 140–153 tok/s at short context to
 132 tok/s at 131k, which set the long-context expectations for the
 interactive tier. Prefill was cross-checked against the engines' Prometheus
 counters: 5.9k tok/s client-measured vs 6.2k server-side on an 83.5k-token
 prompt, under 5% gap.
 
-## TP3 status (community)
+## TP3
 
-The local-inference-lab Discord runs an active TP3 (three-GPU) effort for
-GLM-5.3-Flash; as of 2026-09-18 it works but stays behind TP2, which is why
-this node serves production on TP2:
+Three-GPU serving is what the primary model runs on. DeepSeek-V4.1-Flash
+(`deepseek-ai/DeepSeek-V4.1-Flash-1017`) takes GPUs 0, 1 and 2 from the image
+`azallaza/ds41-kraken-tp3:20261019.3` on port 8019, and the gateway's `main`
+route points at it. Harder requests go there; the cheaper lanes stay on one
+GPU. The stack was restarted on 28 Oct and has run continuously since.
+
+GLM-5.3-Flash is the case where TP3 was tried and did not win, so that model
+still serves on TP2. The local-inference-lab Discord ran the three-GPU work for
+it; as of 2026-09-18 it functions but stays behind TP2:
 
 - Community-maintained ported images
   ([GLM5.3-Flash-TP3-Testing](https://github.com/BoxTops4Coochie/GLM5.3-Flash-TP3-Testing),
@@ -282,12 +295,11 @@ this node serves production on TP2:
   165–180 tok/s c1 flat to 128k on LLM-bench. DCP1 reaches ~2M context,
   DCP3 ~5–7.5M at slower decode (~150 tok/s c1, ~440 tok/s c8).
 - Checkpoints in use: local-inference-lab/GLM-5.3-Flash-NVFP4 (uniform
-  NVFP4, simplest) and brandonmusic/GLM-5.3-Flash-TrellisMX-MXFP8. Mixed-quant checkpoints (MXFP8 +
-  W4A16 in one file) add enough TP3-specific complexity that testers
-  rejected them; EXL3 fails on TP3 outright (padded
+  NVFP4, simplest) and brandonmusic/GLM-5.3-Flash-TrellisMX-MXFP8. Mixed-quant
+  checkpoints (MXFP8 + W4A16 in one file) add enough TP3-specific complexity
+  that testers rejected them; EXL3 fails on TP3 outright (padded
   `moe_intermediate_size` loader mismatch).
-- Long-context consistency on TP3 attempts has not
-  reached TP2 parity.
+- Long-context consistency on the GLM TP3 attempts has not reached TP2 parity.
 
 ## Incidents
 
@@ -299,7 +311,7 @@ Two incidents led to changes in the current setup.
   root-caused. Logs are now captured before any revert; deliberate restarts
   require approval; risky changes cut over on a spare port.
 - [Unpinned background route stalled an interactive session](postmortems/2026-08-31-aux-compaction-stall.md):
-  a compaction job followed the gateway's default route onto the TP2 pair
+  a compaction job followed the gateway's default route onto the interactive set and stalled a live session
   and stalled a live session for ~10 min; the auxiliary GPU had spare
   capacity throughout. Six task types are now pinned by name, and the
   standing rule distinguishes unpinned routes from bounded, explicit
