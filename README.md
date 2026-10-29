@@ -74,6 +74,14 @@ landed in-tree, and eleven defect reports filed with nine resolved:
 New models for this stack are being packaged for flare rather than brought up on
 another engine, and the next flare release is expected soon.
 
+## Next
+
+New models on this node are intended to ship as flare packages rather than as
+another per-model serving stack, and the next flare releases are expected to cover
+GLM-5.3-Flash. That model does not serve on flare here yet: the export ran out of
+memory during kernel tuning on 27 Oct, the same failure reported upstream in
+`#73`. Until a release covers it, the GLM lane stays on SGLang at TP2.
+
 ## Quickstart
 
 ```bash
