@@ -1,5 +1,81 @@
 # inference-platform
 
+A personal AI on my own hardware — with an elastic cloud lane on the same open
+weights. This repo is the sanitised reference for how it is wired: gateway
+routing, serving stacks, the burst tier, benchmark receipts, incident notes and
+the design decisions behind them.
+
+**What runs here.** Three RTX PRO 6000 cards (96 GB each) under Proxmox serve
+every steady-state call on open weights: vLLM and SGLang for tensor-parallel
+work, a captured-graph engine (flare) for a Nemotron package, and LiteLLM in
+front of all of it exposing role-named aliases (`main`, `fast`, `vision`,
+`burst`) instead of model slugs, so the size behind a role can change without a
+client edit. A lane resolver keeps those roles pointing at live backends.
+
+**Why the burst tier exists.** Local serving has to be sized; a cloud endpoint
+does not. The burst lane carries overflow and failover at zero idle cost — and it
+serves the *same checkpoint* as the local lane, so bursting is a change of
+location rather than a change of model.
+
+## What runs
+
+| Role | Model | Where |
+|---|---|---|
+| `main` / `fast` | DeepSeek-V4.1-Flash (TP3), Qwen3.8-Flash-Next (TP1, flare), GLM-5.3-Flash (TP2) | local GPUs |
+| `vision` | a vision-capable lane with an independent fallback | local GPUs |
+| `burst` | NVIDIA Nemotron-3.5-Lightning — the same checkpoint as the local flare lane | Nebius Token Factory |
+| memory | CPU embedding sidecar, long-term fact bank, RDF/SPARQL graph | local |
+
+## NVIDIA open-source models used
+
+- **NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4** — served locally from a signed
+  flare package (weights, compiled kernels, captured CUDA graphs) built with a
+  recipe written for this checkpoint family, and served unchanged on Nebius Token
+  Factory as the burst tier. Qualified against a reference serving of the same
+  checkpoint: primary answers agree on 40/40 comparison prompts, deterministic
+  across repeated runs, 30/30 requests clean.
+- **NVIDIA Nemotron-3-Nano-30B-A3B** — the original burst default, still routable.
+- **NVIDIA Nemotron-3-Ultra-550B-A55B** — long-context consolidation step,
+  reachable on the same key.
+- **NVIDIA Model Optimizer** — the NVFP4 quant of Qwen3.6-35B-A3B that serves
+  background traffic (credited below).
+
+## Where Nebius Token Factory helped
+
+The burst tier is one OpenAI-compatible block in the gateway config. That is the
+whole integration: one base URL and one key gave every client in the stack an
+elastic lane with no second SDK, no second model family and no second set of
+prompts. Concretely:
+
+- **Capacity without planning.** Local serving must be sized; Token Factory must
+  not. Overflow and failover cost nothing while idle.
+- **Same weights, different location.** Token Factory serves the same Nemotron
+  checkpoint this node runs on flare, so a burst differs from a local call by one
+  model name.
+- **Receipts, not adjectives.** `gateway/token_factory_check.py` enumerates the
+  endpoint's models at run time (no hard-coded slug) and returns latency and token
+  usage for its smoke call; those numbers land in the benchmark receipts.
+
+## Quickstart
+
+```bash
+git clone https://github.com/mark-yong/inference-platform && cd inference-platform
+cp gateway/config.example.yaml gateway/config.yaml    # roles, tiers, burst tier
+export NEBIUS_API_KEY=...                             # only for the burst lane
+python gateway/token_factory_check.py                 # lists models, one smoke call
+# serving stacks: serving/docker-compose.example.yml + per-service env templates
+```
+
+Every address in the examples is a variable; nothing points at a private host.
+
+---
+
+## Operating notes
+
+The rest of this document is the operating record: routing behaviour, serving
+configuration, benchmark results, incident write-ups and the rules that came out
+of them.
+
 This repo contains the sanitised configs from my inference server. It runs
 3× RTX PRO 6000 (96 GB each) on an EPYC host under Proxmox, with LiteLLM in
 front of vLLM, SGLang and llama.cpp, ~15 containers, four open-weight model
@@ -63,7 +139,9 @@ Three tiers in the gateway config:
    capped TP2 member (weight 1, `rpm: 4`, `max_parallel_requests: 1`).
    Weight sets selection probability; the caps are what bound the impact on
    interactive traffic. Remove the TP2 member for strict isolation.
-4. Burst: NVIDIA Nemotron on Nebius Token Factory via `burst-nemotron`,
+4. Burst: NVIDIA Nemotron on Nebius Token Factory via `burst-nemotron-lightning`
+   (the same checkpoint the local flare lane serves — bursting changes location,
+   not model) and `burst-nemotron` (Nano) for the fast lane,
    reachable only through router fallbacks (`primary-chat`,
    `primary-chat-nothink`, `background-llm`). Fail fast (`allowed_fails: 1`)
    plus a 45 s cooldown keeps consumers working through a GPU stack swap;
